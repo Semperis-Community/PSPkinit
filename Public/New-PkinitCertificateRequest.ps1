@@ -1,8 +1,3 @@
-<#
-    New-PkinitCertificateRequest.ps1: public entry point for requesting a
-    PKINIT-suitable certificate with a caller-chosen SAN.
-#>
-
 function New-PkinitCertificateRequest {
     <#
         .SYNOPSIS
@@ -89,13 +84,31 @@ function New-PkinitCertificateRequest {
         Thumbprint, Subject, San, and SanType.
 
         .EXAMPLE
-        $req = New-PkinitCertificateRequest -Subject 'CN=Test User' -San 'user@adcs.goat' `
-            -Template 'UserWithSIDExtension' -CertificateAuthority 'ADCSGOAT-CA\LabRootCA1'
-        Invoke-PkinitAuthentication -Certificate $req.Certificate -ClientName $req.San `
-            -Realm 'ADCS.GOAT' -KdcHostname 'ADCSGoat-DC.adcs.goat'
+        $reqParams = @{
+            Subject              = 'CN=Test User'
+            San                  = 'user@adcs.goat'
+            Template             = 'User'
+            CertificateAuthority = 'ADCSGOAT-CA\LabRootCA1'
+        }
+        New-PkinitCertificateRequest @reqParams
 
-        Requests a certificate carrying a UPN SAN of 'user@adcs.goat', then
-        authenticates as that same identity.
+        Requests and installs a certificate to Cert:\CurrentUser\My, returning
+        the result without immediately authenticating.
+
+        .EXAMPLE
+        $reqParams = @{
+            Subject              = 'CN=Test User'
+            San                  = 'user@adcs.goat'
+            Template             = 'UserWithSIDExtension'
+            CertificateAuthority = 'ADCSGOAT-CA\LabRootCA1'
+            Sid                  = 'S-1-5-21-1-2-3-1105'
+            MachineContext       = $true
+        }
+        New-PkinitCertificateRequest @reqParams
+
+        Embeds an explicit SID security extension on the CSR and installs the
+        issued certificate to Cert:\LocalMachine\My instead of the current
+        user's store.
     #>
     [CmdletBinding()]
     [OutputType([PSCustomObject])]

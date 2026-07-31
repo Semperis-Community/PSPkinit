@@ -91,6 +91,19 @@ etc.) surfaces as a normal terminating PowerShell error - see
 [Troubleshooting](docs/troubleshooting.md) for what specific errors usually
 mean.
 
+If you don't already have a suitable certificate, `New-PkinitCertificateRequest`
+can request one from an AD CS CA:
+
+```powershell
+$certParams = @{
+    Subject              = 'CN=Test User'
+    San                  = 'user@your.realm'
+    Template             = 'User'
+    CertificateAuthority = 'your-ca.your.realm\YourCAName'
+}
+New-PkinitCertificateRequest @certParams
+```
+
 ## Further Reading
 
 - [Advanced Usage](docs/advanced-usage.md) - requesting a certificate with a
