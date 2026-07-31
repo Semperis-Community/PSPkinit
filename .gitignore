@@ -1,0 +1,5 @@
+# Pester scratch output (see repo convention: *> ./Ignore/file.txt)
+Ignore/
+
+# Pester test result artifacts
+testResults.xml
