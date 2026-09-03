@@ -1,3 +1,8 @@
+<#
+    .SYNOPSIS
+    Pester tests for certificate enrollment helpers.
+#>
+
 BeforeAll {
     $modulePath = Join-Path -Path $PSScriptRoot -ChildPath '..\PSPkinit.psd1'
     Import-Module -Name $modulePath -Force

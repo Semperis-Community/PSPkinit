@@ -1,3 +1,8 @@
+<#
+    .SYNOPSIS
+    Pester tests for Kerberos cryptography helpers.
+#>
+
 BeforeAll {
     . $PSScriptRoot/../Private/KerberosCrypto.ps1
 }

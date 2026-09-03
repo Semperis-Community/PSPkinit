@@ -1,3 +1,8 @@
+<#
+    .SYNOPSIS
+    Pester tests for PKINIT Diffie-Hellman helpers.
+#>
+
 BeforeAll {
     . $PSScriptRoot/../Private/Asn1.ps1
     . $PSScriptRoot/../Private/Pkinit.ps1

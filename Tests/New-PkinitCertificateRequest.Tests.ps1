@@ -1,3 +1,8 @@
+<#
+    .SYNOPSIS
+    Pester tests for New-PkinitCertificateRequest.
+#>
+
 BeforeAll {
     $modulePath = Join-Path -Path $PSScriptRoot -ChildPath '..\PSPkinit.psd1'
     Import-Module -Name $modulePath -Force

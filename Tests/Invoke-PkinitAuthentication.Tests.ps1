@@ -1,3 +1,8 @@
+<#
+    .SYNOPSIS
+    Pester tests for Invoke-PkinitAuthentication.
+#>
+
 BeforeAll {
     $modulePath = Join-Path -Path $PSScriptRoot -ChildPath '..\PSPkinit.psd1'
     Import-Module -Name $modulePath -Force

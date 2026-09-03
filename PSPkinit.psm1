@@ -1,4 +1,7 @@
 <#
+    .SYNOPSIS
+    Pure PowerShell/.NET PKINIT implementation for Kerberos certificate authentication.
+
     PSPkinit root module: dot-sources every Private (internal) implementation
     file and every Public (exported) function file, then exports only the
     Public surface area.
