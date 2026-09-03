@@ -1,8 +1,10 @@
 <#
-    Invoke-PkinitAuthentication: public entry point for PSPkinit.
+    .SYNOPSIS
+    Public PKINIT authentication entry point for PSPkinit.
 #>
 
-function Invoke-PkinitAuthentication {
+function Invoke-PkinitAuthentication
+{
     <#
         .SYNOPSIS
         Performs a full RFC 4556 PKINIT AS-REQ/AS-REP exchange against a KDC
@@ -142,49 +144,63 @@ function Invoke-PkinitAuthentication {
         [switch] $SkipKdcSignatureVerification
     )
 
-    switch ($PSCmdlet.ParameterSetName) {
-        'Thumbprint' {
+    switch ($PSCmdlet.ParameterSetName)
+    {
+        'Thumbprint'
+        {
             $resolvedCert = Get-ChildItem -Path 'Cert:\CurrentUser\My' | Where-Object { $_.Thumbprint -eq $CertificateThumbprint }
-            if (-not $resolvedCert) {
+            if (-not $resolvedCert)
+            {
                 $exception = [System.Security.Cryptography.CryptographicException]::new(
                     "No certificate with thumbprint '$CertificateThumbprint' was found in Cert:\CurrentUser\My.")
                 $PSCmdlet.ThrowTerminatingError([System.Management.Automation.ErrorRecord]::new(
                         $exception, 'PkinitCertificateNotFound', [System.Management.Automation.ErrorCategory]::ObjectNotFound, $CertificateThumbprint))
             }
         }
-        'Certificate' {
+        'Certificate'
+        {
             $resolvedCert = $Certificate
         }
-        'PfxPath' {
-            if (-not (Test-Path -Path $PfxPath)) {
+        'PfxPath'
+        {
+            if (-not (Test-Path -Path $PfxPath))
+            {
                 $exception = [System.IO.FileNotFoundException]::new("PFX file not found: $PfxPath", $PfxPath)
                 $PSCmdlet.ThrowTerminatingError([System.Management.Automation.ErrorRecord]::new(
                         $exception, 'PkinitPfxNotFound', [System.Management.Automation.ErrorCategory]::ObjectNotFound, $PfxPath))
             }
             $keyStorageFlags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable
-            try {
-                try {
+            try
+            {
+                try
+                {
                     # .NET 9+ prefers X509CertificateLoader over the (now-obsolete-marked) X509Certificate2 constructors.
                     $resolvedCert = [System.Security.Cryptography.X509Certificates.X509CertificateLoader]::LoadPkcs12FromFile($PfxPath, $PfxPassword, $keyStorageFlags)
-                } catch {
+                }
+                catch
+                {
                     # X509CertificateLoader doesn't exist on this runtime (Windows PowerShell 5.1 / older .NET) - fall back.
                     $resolvedCert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($PfxPath, $PfxPassword, $keyStorageFlags)
                 }
-            } catch {
+            }
+            catch
+            {
                 $PSCmdlet.ThrowTerminatingError([System.Management.Automation.ErrorRecord]::new(
                         $_.Exception, 'PkinitPfxLoadFailed', [System.Management.Automation.ErrorCategory]::InvalidData, $PfxPath))
             }
         }
     }
 
-    if (-not $resolvedCert.HasPrivateKey) {
+    if (-not $resolvedCert.HasPrivateKey)
+    {
         $exception = [System.Security.Cryptography.CryptographicException]::new(
             "Certificate '$($resolvedCert.Thumbprint)' does not have a private key available.")
         $PSCmdlet.ThrowTerminatingError([System.Management.Automation.ErrorRecord]::new(
                 $exception, 'PkinitCertificateNoPrivateKey', [System.Management.Automation.ErrorCategory]::InvalidOperation, $resolvedCert))
     }
 
-    try {
+    try
+    {
         $body = New-KdcReqBody -ClientName $ClientName -ClientNameType $ClientNameType -Realm $Realm -Nonce $Nonce -EncryptionTypes $EncryptionTypes
         $dh = New-PkinitDiffieHellmanKeyPair
         $authPack = New-PkinitAuthPack -KdcReqBody $body -Nonce $Nonce -DhKeyPair $dh
@@ -194,7 +210,8 @@ function Invoke-PkinitAuthentication {
 
         $response = Send-KerberosTcpMessage -KdcHostname $KdcHostname -Port $Port -Message $asReq -TimeoutSeconds $TimeoutSeconds
 
-        if ($response[0] -eq 0x7e) {
+        if ($response[0] -eq 0x7e)
+        {
             $krbError = ConvertFrom-KrbError -Message $response
             $kdcException = [System.Security.Authentication.AuthenticationException]::new(
                 "KDC rejected the AS-REQ: KRB-ERROR $($krbError.ErrorCode) $($krbError.ErrorText)".Trim())
@@ -204,20 +221,23 @@ function Invoke-PkinitAuthentication {
 
         $asRep = ConvertFrom-KdcRep -Message $response -ExpectedApplicationTag 11
         $pkAsRepPaData = $asRep.PaData | Where-Object { $_.Type -eq 17 }
-        if (-not $pkAsRepPaData) {
+        if (-not $pkAsRepPaData)
+        {
             throw 'AS-REP did not include a PA-PK-AS-REP (type 17) padata element.'
         }
 
         $dhRepInfo = ConvertFrom-PkinitDhRepInfo -PaDataValue $pkAsRepPaData.Value
         $kdcDhKeyInfo = ConvertFrom-PkinitKdcDhKeyInfo -DhSignedData $dhRepInfo.DhSignedData -SkipSignatureVerification:$SkipKdcSignatureVerification
 
-        if ($kdcDhKeyInfo.Nonce -ne $Nonce) {
+        if ($kdcDhKeyInfo.Nonce -ne $Nonce)
+        {
             throw "Nonce mismatch: sent $Nonce, KDC returned $($kdcDhKeyInfo.Nonce) - possible replay or tampering."
         }
 
         $sharedSecret = Get-PkinitDiffieHellmanSharedSecret -TheirPublicValue $kdcDhKeyInfo.ServerPublicValue -OurPrivateExponent $dh.PrivateExponent -P $dh.P -ModulusByteLength $dh.ModulusByteLength
 
-        $keyByteLength = switch ($asRep.EncPart.EType) {
+        $keyByteLength = switch ($asRep.EncPart.EType)
+        {
             18 { 32 }
             17 { 16 }
             default { throw "Unsupported AS-REP enctype $($asRep.EncPart.EType)." }
@@ -227,27 +247,32 @@ function Invoke-PkinitAuthentication {
         $encPart = ConvertFrom-EncKdcRepPart -Message $decrypted -ExpectedApplicationTag 25
 
         return [PSCustomObject]@{
-            PSTypeName           = 'PSPkinit.AuthenticationResult'
-            CName                = $asRep.CName.NameStrings -join '/'
-            CRealm               = $asRep.CRealm
-            SName                = $encPart.SName.NameStrings -join '/'
-            SRealm               = $encPart.SRealm
-            AuthTime             = $encPart.AuthTime
-            StartTime            = $encPart.StartTime
-            EndTime              = $encPart.EndTime
-            RenewTill            = $encPart.RenewTill
-            TicketFlags          = $encPart.Flags
-            SessionKeyType       = $encPart.Key.KeyType
-            SessionKey           = $encPart.Key.KeyValue
-            Nonce                = $Nonce
+            PSTypeName = 'PSPkinit.AuthenticationResult'
+            CName = $asRep.CName.NameStrings -join '/'
+            CRealm = $asRep.CRealm
+            SName = $encPart.SName.NameStrings -join '/'
+            SRealm = $encPart.SRealm
+            AuthTime = $encPart.AuthTime
+            StartTime = $encPart.StartTime
+            EndTime = $encPart.EndTime
+            RenewTill = $encPart.RenewTill
+            TicketFlags = $encPart.Flags
+            SessionKeyType = $encPart.Key.KeyType
+            SessionKey = $encPart.Key.KeyValue
+            Nonce = $Nonce
             KdcSignerCertificate = $kdcDhKeyInfo.SignerCertificate
-            Ticket               = $asRep.Ticket
+            Ticket = $asRep.Ticket
         }
-    } catch [System.Security.Authentication.AuthenticationException] {
+    }
+    catch [System.Security.Authentication.AuthenticationException]
+    {
         $PSCmdlet.ThrowTerminatingError([System.Management.Automation.ErrorRecord]::new(
                 $_.Exception, 'PkinitKdcError', [System.Management.Automation.ErrorCategory]::SecurityError, $_.Exception.Data['KrbError']))
-    } catch {
+    }
+    catch
+    {
         $PSCmdlet.ThrowTerminatingError([System.Management.Automation.ErrorRecord]::new(
                 $_.Exception, 'PkinitAuthenticationFailed', [System.Management.Automation.ErrorCategory]::InvalidOperation, $null))
     }
 }
+
