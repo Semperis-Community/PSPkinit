@@ -1,3 +1,8 @@
+<#
+    .SYNOPSIS
+    Requests a certificate from an AD CS CA using the native CertEnroll/CertificateAuthority COM object model.
+#>
+
 function New-PkinitCertificateRequest {
     <#
         .SYNOPSIS
