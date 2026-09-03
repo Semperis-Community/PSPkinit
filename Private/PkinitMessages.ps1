@@ -3,7 +3,8 @@
     built on the DER helpers in Asn1.ps1.
 #>
 
-function ConvertTo-KerberosPrincipalName {
+function ConvertTo-KerberosPrincipalName
+{
     <#
         .SYNOPSIS
         PrincipalName ::= SEQUENCE { name-type [0] Int32, name-string [1] SEQUENCE OF KerberosString }
@@ -24,7 +25,8 @@ function ConvertTo-KerberosPrincipalName {
     )
 }
 
-function ConvertTo-KerberosFlags {
+function ConvertTo-KerberosFlags
+{
     <#
         .SYNOPSIS
         KerberosFlags ::= BIT STRING (SIZE(32..MAX)) - always sent as exactly 4 octets
@@ -37,13 +39,15 @@ function ConvertTo-KerberosFlags {
     )
 
     $bytes = [BitConverter]::GetBytes($Value)
-    if ([BitConverter]::IsLittleEndian) {
+    if ([BitConverter]::IsLittleEndian)
+    {
         [Array]::Reverse($bytes)
     }
     return ConvertTo-Asn1BitString -Bytes $bytes
 }
 
-function New-KdcReqBody {
+function New-KdcReqBody
+{
     <#
         .SYNOPSIS
         Builds a KDC-REQ-BODY (RFC 4120 section 5.4.1) for an AS-REQ.
@@ -87,7 +91,8 @@ function New-KdcReqBody {
     return ConvertTo-Asn1Sequence -Children $children
 }
 
-function New-AsReq {
+function New-AsReq
+{
     <#
         .SYNOPSIS
         Builds a complete AS-REQ ::= [APPLICATION 10] KDC-REQ, with optional PA-DATA.
@@ -106,7 +111,8 @@ function New-AsReq {
     $children = [System.Collections.Generic.List[byte[]]]::new()
     $children.Add((ConvertTo-Asn1ContextExplicit -TagNumber 1 -InnerTlv (ConvertTo-Asn1Integer -Value 5)))
     $children.Add((ConvertTo-Asn1ContextExplicit -TagNumber 2 -InnerTlv (ConvertTo-Asn1Integer -Value 10)))
-    if ($PaData.Count -gt 0) {
+    if ($PaData.Count -gt 0)
+    {
         $paDataSeq = ConvertTo-Asn1Sequence -Children $PaData
         $children.Add((ConvertTo-Asn1ContextExplicit -TagNumber 3 -InnerTlv $paDataSeq))
     }
@@ -116,7 +122,8 @@ function New-AsReq {
     return ConvertTo-Asn1ApplicationConstructed -TagNumber 10 -InnerTlv $kdcReq
 }
 
-function New-PaData {
+function New-PaData
+{
     <#
         .SYNOPSIS
         PA-DATA ::= SEQUENCE { padata-type [1] Int32, padata-value [2] OCTET STRING }
@@ -134,7 +141,8 @@ function New-PaData {
     )
 }
 
-function Send-KerberosTcpMessage {
+function Send-KerberosTcpMessage
+{
     <#
         .SYNOPSIS
         Sends a DER-encoded Kerberos message to a KDC over TCP (RFC 4120 7.2.2:
@@ -151,16 +159,19 @@ function Send-KerberosTcpMessage {
     )
 
     $client = [System.Net.Sockets.TcpClient]::new()
-    try {
+    try
+    {
         $connectTask = $client.ConnectAsync($KdcHostname, $Port)
-        if (-not $connectTask.Wait([TimeSpan]::FromSeconds($TimeoutSeconds))) {
+        if (-not $connectTask.Wait([TimeSpan]::FromSeconds($TimeoutSeconds)))
+        {
             throw "Timed out connecting to $KdcHostname`:$Port"
         }
 
         $stream = $client.GetStream()
 
         $lengthPrefix = [BitConverter]::GetBytes([uint32]$Message.Length)
-        if ([BitConverter]::IsLittleEndian) {
+        if ([BitConverter]::IsLittleEndian)
+        {
             [Array]::Reverse($lengthPrefix)
         }
         $stream.Write($lengthPrefix, 0, 4)
@@ -169,25 +180,30 @@ function Send-KerberosTcpMessage {
 
         $lengthBuffer = New-Object byte[] 4
         $readTotal = 0
-        while ($readTotal -lt 4) {
+        while ($readTotal -lt 4)
+        {
             $readTask = $stream.ReadAsync($lengthBuffer, $readTotal, 4 - $readTotal)
-            if (-not $readTask.Wait([TimeSpan]::FromSeconds($TimeoutSeconds))) {
+            if (-not $readTask.Wait([TimeSpan]::FromSeconds($TimeoutSeconds)))
+            {
                 throw "Timed out reading response length from $KdcHostname`:$Port"
             }
             $n = $readTask.Result
             if ($n -eq 0) { throw 'Connection closed while reading response length.' }
             $readTotal += $n
         }
-        if ([BitConverter]::IsLittleEndian) {
+        if ([BitConverter]::IsLittleEndian)
+        {
             [Array]::Reverse($lengthBuffer)
         }
         $responseLength = [BitConverter]::ToUInt32($lengthBuffer, 0)
 
         $responseBuffer = New-Object byte[] $responseLength
         $readTotal = 0
-        while ($readTotal -lt $responseLength) {
+        while ($readTotal -lt $responseLength)
+        {
             $readTask = $stream.ReadAsync($responseBuffer, $readTotal, $responseLength - $readTotal)
-            if (-not $readTask.Wait([TimeSpan]::FromSeconds($TimeoutSeconds))) {
+            if (-not $readTask.Wait([TimeSpan]::FromSeconds($TimeoutSeconds)))
+            {
                 throw "Timed out reading response body from $KdcHostname`:$Port"
             }
             $n = $readTask.Result
@@ -196,12 +212,15 @@ function Send-KerberosTcpMessage {
         }
 
         return $responseBuffer
-    } finally {
+    }
+    finally
+    {
         $client.Dispose()
     }
 }
 
-function ConvertFrom-PaData {
+function ConvertFrom-PaData
+{
     <#
         .SYNOPSIS
         Decodes a single PA-DATA element (RFC 4120 5.2.7:
@@ -219,10 +238,12 @@ function ConvertFrom-PaData {
 
     $fields = Read-Asn1Sequence -Content $Content
     $result = [PSCustomObject]@{ Type = $null; Value = $null }
-    foreach ($field in $fields) {
+    foreach ($field in $fields)
+    {
         $tagNumber = $field.Tag -band 0x1f
         $inner = Read-Asn1Tlv -Bytes $field.Content -Offset 0
-        switch ($tagNumber) {
+        switch ($tagNumber)
+        {
             1 { $result.Type = [int](ConvertFrom-Asn1Integer -Content $inner.Content) }
             2 { $result.Value = $inner.Content }
             default { }
@@ -231,7 +252,8 @@ function ConvertFrom-PaData {
     return $result
 }
 
-function ConvertFrom-KerberosPrincipalName {
+function ConvertFrom-KerberosPrincipalName
+{
     <#
         .SYNOPSIS
         Decodes a PrincipalName (RFC 4120 5.2.2) into its name-type and
@@ -244,12 +266,15 @@ function ConvertFrom-KerberosPrincipalName {
 
     $fields = Read-Asn1Sequence -Content $Content
     $result = [PSCustomObject]@{ NameType = $null; NameStrings = @() }
-    foreach ($field in $fields) {
+    foreach ($field in $fields)
+    {
         $tagNumber = $field.Tag -band 0x1f
         $inner = Read-Asn1Tlv -Bytes $field.Content -Offset 0
-        switch ($tagNumber) {
+        switch ($tagNumber)
+        {
             0 { $result.NameType = [int](ConvertFrom-Asn1Integer -Content $inner.Content) }
-            1 {
+            1
+            {
                 $strs = Read-Asn1Sequence -Content $inner.Content
                 $result.NameStrings = @($strs | ForEach-Object { ConvertFrom-Asn1GeneralString -Content $_.Content })
             }
@@ -259,7 +284,8 @@ function ConvertFrom-KerberosPrincipalName {
     return $result
 }
 
-function ConvertFrom-EncryptedData {
+function ConvertFrom-EncryptedData
+{
     <#
         .SYNOPSIS
         Decodes an EncryptedData (RFC 4120 5.2.9:
@@ -272,10 +298,12 @@ function ConvertFrom-EncryptedData {
 
     $fields = Read-Asn1Sequence -Content $Content
     $result = [PSCustomObject]@{ EType = $null; Kvno = $null; Cipher = $null }
-    foreach ($field in $fields) {
+    foreach ($field in $fields)
+    {
         $tagNumber = $field.Tag -band 0x1f
         $inner = Read-Asn1Tlv -Bytes $field.Content -Offset 0
-        switch ($tagNumber) {
+        switch ($tagNumber)
+        {
             0 { $result.EType = [int](ConvertFrom-Asn1Integer -Content $inner.Content) }
             1 { $result.Kvno = [int](ConvertFrom-Asn1Integer -Content $inner.Content) }
             2 { $result.Cipher = $inner.Content }
@@ -285,7 +313,8 @@ function ConvertFrom-EncryptedData {
     return $result
 }
 
-function ConvertFrom-KdcRep {
+function ConvertFrom-KdcRep
+{
     <#
         .SYNOPSIS
         Parses a KDC-REP (RFC 4120 5.4.2 - AS-REP or TGS-REP) into its
@@ -308,29 +337,33 @@ function ConvertFrom-KdcRep {
 
     $outer = Read-Asn1Tlv -Bytes $Message -Offset 0
     $expectedTag = [byte](0x60 -bor $ExpectedApplicationTag)
-    if ($outer.Tag -ne $expectedTag) {
+    if ($outer.Tag -ne $expectedTag)
+    {
         throw ("ConvertFrom-KdcRep: expected [APPLICATION {0}] (tag 0x{1:X2}), got tag 0x{2:X2}." -f $ExpectedApplicationTag, $expectedTag, $outer.Tag)
     }
     $seqTlv = Read-Asn1Tlv -Bytes $outer.Content -Offset 0
     $fields = Read-Asn1Sequence -Content $seqTlv.Content
 
     $result = [PSCustomObject]@{
-        PvNo    = $null
+        PvNo = $null
         MsgType = $null
-        PaData  = @()
-        CRealm  = $null
-        CName   = $null
-        Ticket  = $null
+        PaData = @()
+        CRealm = $null
+        CName = $null
+        Ticket = $null
         EncPart = $null
     }
 
-    foreach ($field in $fields) {
+    foreach ($field in $fields)
+    {
         $tagNumber = $field.Tag -band 0x1f
         $inner = Read-Asn1Tlv -Bytes $field.Content -Offset 0
-        switch ($tagNumber) {
+        switch ($tagNumber)
+        {
             0 { $result.PvNo = [int](ConvertFrom-Asn1Integer -Content $inner.Content) }
             1 { $result.MsgType = [int](ConvertFrom-Asn1Integer -Content $inner.Content) }
-            2 {
+            2
+            {
                 $paSeq = Read-Asn1Sequence -Content $inner.Content
                 $result.PaData = @($paSeq | ForEach-Object { ConvertFrom-PaData -Content $_.Content })
             }
@@ -345,7 +378,8 @@ function ConvertFrom-KdcRep {
     return $result
 }
 
-function ConvertFrom-EncKdcRepPart {
+function ConvertFrom-EncKdcRepPart
+{
     <#
         .SYNOPSIS
         Parses a decrypted EncKDCRepPart (RFC 4120 5.4.2 - the plaintext
@@ -367,33 +401,38 @@ function ConvertFrom-EncKdcRepPart {
 
     $outer = Read-Asn1Tlv -Bytes $Message -Offset 0
     $expectedTag = [byte](0x60 -bor $ExpectedApplicationTag)
-    if ($outer.Tag -ne $expectedTag) {
+    if ($outer.Tag -ne $expectedTag)
+    {
         throw ("ConvertFrom-EncKdcRepPart: expected [APPLICATION {0}] (tag 0x{1:X2}), got tag 0x{2:X2}." -f $ExpectedApplicationTag, $expectedTag, $outer.Tag)
     }
     $seqTlv = Read-Asn1Tlv -Bytes $outer.Content -Offset 0
     $fields = Read-Asn1Sequence -Content $seqTlv.Content
 
     $result = [PSCustomObject]@{
-        Key       = $null
-        Nonce     = $null
-        Flags     = $null
-        AuthTime  = $null
+        Key = $null
+        Nonce = $null
+        Flags = $null
+        AuthTime = $null
         StartTime = $null
-        EndTime   = $null
+        EndTime = $null
         RenewTill = $null
-        SRealm    = $null
-        SName     = $null
+        SRealm = $null
+        SName = $null
     }
 
-    foreach ($field in $fields) {
+    foreach ($field in $fields)
+    {
         $tagNumber = $field.Tag -band 0x1f
         $inner = Read-Asn1Tlv -Bytes $field.Content -Offset 0
-        switch ($tagNumber) {
-            0 {
+        switch ($tagNumber)
+        {
+            0
+            {
                 $keyFields = Read-Asn1Sequence -Content $inner.Content
                 $keyType = $null
                 $keyValue = $null
-                foreach ($kf in $keyFields) {
+                foreach ($kf in $keyFields)
+                {
                     $kfTag = $kf.Tag -band 0x1f
                     $kfInner = Read-Asn1Tlv -Bytes $kf.Content -Offset 0
                     if ($kfTag -eq 0) { $keyType = [int](ConvertFrom-Asn1Integer -Content $kfInner.Content) }
@@ -402,10 +441,12 @@ function ConvertFrom-EncKdcRepPart {
                 $result.Key = [PSCustomObject]@{ KeyType = $keyType; KeyValue = $keyValue }
             }
             2 { $result.Nonce = [uint32](ConvertFrom-Asn1Integer -Content $inner.Content) }
-            4 {
+            4
+            {
                 $bits = $inner.Content
                 $flagBytes = if ($bits.Length -gt 1) { [byte[]]$bits[1..($bits.Length - 1)] } else { [byte[]]@() }
-                if ($flagBytes.Length -lt 4) {
+                if ($flagBytes.Length -lt 4)
+                {
                     $padded = New-Object byte[] 4
                     [Array]::Copy($flagBytes, 0, $padded, 0, $flagBytes.Length)
                     $flagBytes = $padded
@@ -427,7 +468,8 @@ function ConvertFrom-EncKdcRepPart {
     return $result
 }
 
-function ConvertFrom-KrbError {
+function ConvertFrom-KrbError
+{
     <#
         .SYNOPSIS
         Parses a KRB-ERROR ::= [APPLICATION 30] SEQUENCE (RFC 4120 5.9.1) into a
@@ -439,7 +481,8 @@ function ConvertFrom-KrbError {
     )
 
     $outer = Read-Asn1Tlv -Bytes $Message -Offset 0
-    if ($outer.Tag -ne 0x7e) {
+    if ($outer.Tag -ne 0x7e)
+    {
         throw ("ConvertFrom-KrbError: expected [APPLICATION 30] (tag 0x7E), got tag 0x{0:X2}." -f $outer.Tag)
     }
     $seqTlv = Read-Asn1Tlv -Bytes $outer.Content -Offset 0
@@ -448,16 +491,18 @@ function ConvertFrom-KrbError {
     $result = [PSCustomObject]@{
         ErrorCode = $null
         ErrorText = $null
-        CRealm    = $null
-        CName     = $null
-        Realm     = $null
-        SName     = $null
+        CRealm = $null
+        CName = $null
+        Realm = $null
+        SName = $null
     }
 
-    foreach ($field in $fields) {
+    foreach ($field in $fields)
+    {
         $tagNumber = $field.Tag -band 0x1f
         $inner = Read-Asn1Tlv -Bytes $field.Content -Offset 0
-        switch ($tagNumber) {
+        switch ($tagNumber)
+        {
             6 { $result.ErrorCode = ConvertFrom-Asn1Integer -Content $inner.Content }
             9 { $result.Realm = ConvertFrom-Asn1GeneralString -Content $inner.Content }
             11 { $result.ErrorText = ConvertFrom-Asn1GeneralString -Content $inner.Content }
@@ -467,3 +512,4 @@ function ConvertFrom-KrbError {
 
     return $result
 }
+

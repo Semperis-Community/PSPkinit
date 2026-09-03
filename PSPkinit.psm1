@@ -10,8 +10,10 @@
 $privatePath = Join-Path -Path $PSScriptRoot -ChildPath 'Private'
 $publicPath = Join-Path -Path $PSScriptRoot -ChildPath 'Public'
 
-foreach ($folder in @($privatePath, $publicPath)) {
-    if (-not (Test-Path -Path $folder)) {
+foreach ($folder in @($privatePath, $publicPath))
+{
+    if (-not (Test-Path -Path $folder))
+    {
         continue
     }
     Get-ChildItem -Path $folder -Filter '*.ps1' -File | ForEach-Object {
@@ -19,10 +21,14 @@ foreach ($folder in @($privatePath, $publicPath)) {
     }
 }
 
-$publicFunctionNames = if (Test-Path -Path $publicPath) {
+$publicFunctionNames = if (Test-Path -Path $publicPath)
+{
     @(Get-ChildItem -Path $publicPath -Filter '*.ps1' -File | ForEach-Object { $_.BaseName })
-} else {
+}
+else
+{
     @()
 }
 
 Export-ModuleMember -Function $publicFunctionNames
+
