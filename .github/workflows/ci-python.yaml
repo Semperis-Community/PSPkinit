@@ -13,9 +13,10 @@ on:
         default: pipeline-config/ref/test-dependencies.yaml
 
 jobs:
-  lint-and-test-python:
+  detect:
     runs-on: windows-2022
-
+    outputs:
+      has_project: ${{ steps.detect.outputs.has_project }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -32,19 +33,29 @@ jobs:
 
           "has_project=$($hasProject.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
+  format-check:
+    needs: detect
+    if: needs.detect.outputs.has_project == 'true'
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
           python-version: '3.13'
 
       - name: Install Python tooling and dependencies
-        if: steps.detect.outputs.has_project == 'true'
         shell: pwsh
         run: |
           $dependencyFile = "${{ inputs.dependency-file }}"
           $extraIndexArgs = @()
           if (Test-Path $dependencyFile) {
-          if (-not (Get-Command ConvertFrom-Yaml -ErrorAction SilentlyContinue)) {
+            if (-not (Get-Command ConvertFrom-Yaml -ErrorAction SilentlyContinue)) {
               if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
                 Register-PSRepository -Default -ErrorAction Stop
               }
@@ -66,23 +77,142 @@ jobs:
           }
 
           python -m pip install --upgrade pip
-          & python -m pip install ruff pytest build @extraIndexArgs
+          python -m pip install ruff @extraIndexArgs
 
           if (Test-Path "requirements.txt") {
-            & python -m pip install -r requirements.txt @extraIndexArgs
+            python -m pip install -r requirements.txt @extraIndexArgs
           }
           elseif (Test-Path "pyproject.toml") {
-            & python -m pip install . @extraIndexArgs
+            python -m pip install . @extraIndexArgs
+          }
+
+      - name: Check Python formatting
+        shell: pwsh
+        run: |
+          ruff format --check .
+
+  analysis-check:
+    needs: detect
+    if: needs.detect.outputs.has_project == 'true'
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install Python tooling and dependencies
+        shell: pwsh
+        run: |
+          $dependencyFile = "${{ inputs.dependency-file }}"
+          $extraIndexArgs = @()
+          if (Test-Path $dependencyFile) {
+            if (-not (Get-Command ConvertFrom-Yaml -ErrorAction SilentlyContinue)) {
+              if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
+                Register-PSRepository -Default -ErrorAction Stop
+              }
+              Install-Module -Name powershell-yaml -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+              Import-Module powershell-yaml -ErrorAction Stop
+            }
+
+            $dependencyConfig = Get-Content -Path $dependencyFile -Raw | ConvertFrom-Yaml -ErrorAction Stop
+            $pythonIndexes = @()
+            if ($null -ne $dependencyConfig.pythonIndexes) {
+              $pythonIndexes = @($dependencyConfig.pythonIndexes)
+            }
+
+            foreach ($index in $pythonIndexes) {
+              if ([string]::IsNullOrWhiteSpace($index.url) -eq $false) {
+                $extraIndexArgs += @("--extra-index-url", $index.url)
+              }
+            }
+          }
+
+          python -m pip install --upgrade pip
+          python -m pip install ruff pytest build @extraIndexArgs
+
+          if (Test-Path "requirements.txt") {
+            python -m pip install -r requirements.txt @extraIndexArgs
+          }
+          elseif (Test-Path "pyproject.toml") {
+            python -m pip install . @extraIndexArgs
           }
 
       - name: Lint Python code
-        if: steps.detect.outputs.has_project == 'true'
         shell: pwsh
         run: |
           ruff check .
 
+      - name: Build Python distributions (validation)
+        shell: pwsh
+        run: |
+          if ((Test-Path "pyproject.toml") -or (Test-Path "setup.py")) {
+            python -m build
+          }
+          else {
+            Write-Host "No Python build metadata found. Skipping distribution build validation."
+          }
+
+  test:
+    needs: detect
+    if: needs.detect.outputs.has_project == 'true'
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install Python tooling and dependencies
+        shell: pwsh
+        run: |
+          $dependencyFile = "${{ inputs.dependency-file }}"
+          $extraIndexArgs = @()
+          if (Test-Path $dependencyFile) {
+            if (-not (Get-Command ConvertFrom-Yaml -ErrorAction SilentlyContinue)) {
+              if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
+                Register-PSRepository -Default -ErrorAction Stop
+              }
+              Install-Module -Name powershell-yaml -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+              Import-Module powershell-yaml -ErrorAction Stop
+            }
+
+            $dependencyConfig = Get-Content -Path $dependencyFile -Raw | ConvertFrom-Yaml -ErrorAction Stop
+            $pythonIndexes = @()
+            if ($null -ne $dependencyConfig.pythonIndexes) {
+              $pythonIndexes = @($dependencyConfig.pythonIndexes)
+            }
+
+            foreach ($index in $pythonIndexes) {
+              if ([string]::IsNullOrWhiteSpace($index.url) -eq $false) {
+                $extraIndexArgs += @("--extra-index-url", $index.url)
+              }
+            }
+          }
+
+          python -m pip install --upgrade pip
+          python -m pip install pytest build @extraIndexArgs
+
+          if (Test-Path "requirements.txt") {
+            python -m pip install -r requirements.txt @extraIndexArgs
+          }
+          elseif (Test-Path "pyproject.toml") {
+            python -m pip install . @extraIndexArgs
+          }
+
       - name: Run Python tests
-        if: steps.detect.outputs.has_project == 'true'
         shell: pwsh
         run: |
           $testPaths = @()
@@ -100,23 +230,6 @@ jobs:
 
           pytest @testPaths --junitxml=python-test-results.xml
 
-      - name: Build Python distributions (validation)
-        if: steps.detect.outputs.has_project == 'true'
-        shell: pwsh
-        run: |
-          if (Test-Path "pyproject.toml" -or Test-Path "setup.py") {
-            python -m build
-          }
-          else {
-            Write-Host "No Python build metadata found. Skipping distribution build validation."
-          }
-
-      - name: Skip when no Python project exists
-        if: steps.detect.outputs.has_project != 'true'
-        shell: pwsh
-        run: |
-          Write-Host "No Python source or project metadata found. Skipping Python validation."
-
       - name: Upload Python test results
         if: always() && hashFiles('python-test-results.xml') != ''
         uses: actions/upload-artifact@v7
@@ -124,10 +237,51 @@ jobs:
           name: python-test-results
           path: python-test-results.xml
 
-      - name: Upload Python build artifacts
-        if: always() && hashFiles('dist/*') != ''
-        uses: actions/upload-artifact@v7
-        with:
-          name: python-dist
-          path: dist/*
+  no-project:
+    needs: detect
+    if: needs.detect.outputs.has_project != 'true'
+    runs-on: windows-2022
+
+    steps:
+      - name: Skip validation for missing Python project content
+        shell: pwsh
+        run: |
+          Write-Host "No Python source or project metadata found. Skipping Python validation."
+
+  validation-summary:
+    needs:
+      - detect
+      - format-check
+      - analysis-check
+      - test
+      - no-project
+    if: always()
+    runs-on: windows-2022
+
+    steps:
+      - name: Summarize validation status
+        shell: pwsh
+        run: |
+          $results = @(
+            @{ Name = 'detect'; Result = '${{ needs.detect.result }}' },
+            @{ Name = 'format-check'; Result = '${{ needs.format-check.result }}' },
+            @{ Name = 'analysis-check'; Result = '${{ needs.analysis-check.result }}' },
+            @{ Name = 'test'; Result = '${{ needs.test.result }}' },
+            @{ Name = 'no-project'; Result = '${{ needs.no-project.result }}' }
+          )
+
+          $results | Format-Table -AutoSize
+
+          $failed = $results | Where-Object { $_.Result -in @('failure', 'cancelled') }
+          if ($failed.Count -gt 0) {
+            throw "One or more Python validation jobs failed: $($failed.Name -join ', ')."
+          }
+
+          $skipped = $results | Where-Object { $_.Result -eq 'skipped' }
+          if ($skipped.Count -eq $results.Count) {
+            Write-Host "No Python project content was detected; all validation steps were skipped."
+            exit 0
+          }
+
+          Write-Host "All Python validation jobs succeeded or were intentionally skipped."
 

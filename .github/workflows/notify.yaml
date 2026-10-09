@@ -608,4 +608,12 @@ jobs:
               echo "- Email configured: false"
             fi
             echo "- Email decision: $email_reason"
+            echo ""
+            echo "## Run Correlation"
+            echo "- Repository: ${{ github.repository }}"
+            echo "- Ref: ${{ github.ref }}"
+            echo "- Commit: ${{ github.sha }}"
+            echo "- Actor: ${{ github.actor }}"
+            echo "- Run: #${{ github.run_number }} (attempt ${{ github.run_attempt }})"
+            echo "- URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           } >> "$GITHUB_STEP_SUMMARY"

@@ -14,6 +14,28 @@ workflowContractVersion: 1.0.0
 # configured package is generated in addition to default output when singlePackage.enabled=true.
 releasePackageName: PSPkinit
 
+# Optional native Windows executable generation for Python projects.
+# When enabled, entryScript must point to a repository-relative Python entry point.
+# oneFile embeds the Python runtime and dependencies in one executable by default.
+pythonNativeExe:
+  enabled: false
+  entryScript: ''
+  oneFile: true
+  name: ''
+  additionalArgs: []
+
+# Optional native Windows executable generation for .NET projects.
+# When enabled, project must point to a repository-relative .csproj file.
+# selfContained and singleFile default to true for a standalone EXE.
+dotnetNativeExe:
+  enabled: false
+  project: ''
+  runtime: win-x64
+  selfContained: true
+  singleFile: true
+  name: ''
+  additionalArgs: []
+
 # Explicit release versioning policy used when a PR merge to main creates the next tag.
 # method: Choose versioning strategy - 'semver' (default) or 'calver'
 versioningPolicy:
@@ -37,13 +59,10 @@ versioningPolicy:
     labelOverrides:
       major:
         - release:major
-        - semver:major
       minor:
         - release:minor
-        - semver:minor
       patch:
         - release:patch
-        - semver:patch
 
   # Calendar versioning configuration (used when method: calver)
   # Versions follow format: YYYY.MM.DD.PATCH (e.g., 2026.06.10.0, 2026.06.10.1)
@@ -60,7 +79,6 @@ versioningPolicy:
     labelOverrides:
       patch:
         - release:patch
-        - calver:patch
 
 # Patterns to detect the release stage from the tag name.
 # Evaluated in order; first match wins. No match defaults to "production".

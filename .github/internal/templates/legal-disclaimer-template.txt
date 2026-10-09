@@ -5,15 +5,17 @@ Replace placeholder values before use.
 
 DISCLAIMER:
 
-Copyright (c) 2026 Semperis. All rights reserved.
+Copyright (c) <YEAR> <COPYRIGHT_HOLDER> ("Semperis"). All rights reserved.
 
-This sample script is not supported under any Semperis standard support program or service.
-The sample script is provided AS-IS without warranty of any kind.
-Semperis disclaims all implied warranties including, without limitation, any implied warranties of
-merchantability or of fitness for a particular purpose.
-The entire risk arising out of the use or performance of the sample script remains with you.
-In no event shall Semperis, its authors, or anyone else involved in the creation, production, or
-delivery of the scripts be liable for any damages whatsoever (including, without limitation, damages
-for loss of business profits, business interruption, loss of business information, or other pecuniary
-loss) arising out of the use of or inability to use the sample script, even if Semperis has been advised
-of the possibility of such damages.
+These materials, including any source code, scripts, configurations, documentation, and related artifacts
+(the “Materials”), are confidential and proprietary to Semperis. The unauthorized use, copying, modification,
+distribution, or disclosure of the Materials is strictly prohibited unless expressly authorized in writing.
+
+To the maximum extent permitted by applicable law, the Materials are provided "as is," without warranties of
+any kind, express, implied, or statutory, including but not limited to the warranties of merchantability,
+fitness for a particular purpose, and noninfringement.
+
+Materials distributed through the Semperis Community Solutions program do not constitute official Semperis
+product support. Except as provided in an applicable agreement with Semperis, Semperis has no obligation to
+provide support, maintenance, or updates for the Materials. Third-party materials remain subject to their
+applicable license terms and notices.
