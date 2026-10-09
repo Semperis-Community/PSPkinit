@@ -6,11 +6,6 @@ on:
       - main
     tags:
       - "v*"
-  pull_request:
-    branches:
-      - main
-    types:
-      - closed
   workflow_dispatch:
     inputs:
       release_stage:
@@ -58,7 +53,6 @@ env:
 jobs:
   validate-repo-structure:
     # Enforce required repository structure.
-    if: ${{ github.event_name != 'pull_request' || (github.event.action == 'closed' && github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main') }}
     runs-on: windows-2022
 
     steps:
@@ -302,116 +296,72 @@ jobs:
             throw "workflowContractVersion '$($pipelineConfig.workflowContractVersion)' does not match release workflow contract '$expectedContractVersion'."
           }
 
-  spell-check:
-    # Check spelling in docs and source comments/files before release.
-    needs: validate-repo-structure
-    if: ${{ github.event_name != 'pull_request' || (github.event.action == 'closed' && github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main') }}
+      - name: Validate release package configuration before tagging
+        shell: pwsh
+        run: |
+          .\scripts\Validate-ReleasePackageConfig.ps1 `
+            -ConfigPath "${{ env.RELEASE_PACKAGES_CONFIG_FILE }}" `
+            -PipelineConfigPath "${{ env.PIPELINE_CONFIG_FILE }}" `
+            -ExclusionsPath "${{ env.RELEASE_PACKAGE_EXCLUSIONS_FILE }}"
+
+  resolve-pr-labels:
+    # Labels drive the version increment and the release:none skip. Push runs read them from the
+    # pull request associated with the pushed commit; workflow_dispatch runs resolve to no labels.
     runs-on: windows-2022
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      labels: ${{ steps.resolve.outputs.labels }}
+      skip_release: ${{ steps.resolve.outputs.skip_release }}
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v5
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
+      - name: Resolve labels from associated pull request
+        id: resolve
+        uses: actions/github-script@v8
         with:
-          node-version: latest
+          script: |
+            let labels = [];
 
-      - name: Run cspell
-        if: github.event_name == 'pull_request'
-        shell: pwsh
-        run: |
-          ./scripts/run-cspell.ps1
+            try {
+              const associated = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                commit_sha: context.sha
+              });
 
-      - name: Run cspell (advisory)
-        if: github.event_name != 'pull_request'
-        shell: pwsh
-        run: |
-          $hadIssues = $false
+              const merged = associated.data.filter((pr) => pr.merged_at !== null);
+              const source = merged[0] || associated.data[0];
 
-          try {
-            ./scripts/run-cspell.ps1
-          }
-          catch {
-            $hadIssues = $true
-            Write-Warning "cspell reported issues in advisory mode. $($_.Exception.Message)"
-          }
-
-          if ($LASTEXITCODE -ne 0) {
-            $hadIssues = $true
-          }
-
-          if ($hadIssues) {
-            Write-Host "::warning::cspell found issues (advisory mode). Review step output and summary."
-          }
-
-          exit 0
-
-  markdownlint:
-    # Check repository markdown formatting separately from spelling before release.
-    needs: validate-repo-structure
-    if: ${{ github.event_name != 'pull_request' || (github.event.action == 'closed' && github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main') }}
-    runs-on: windows-2022
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v5
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: latest
-
-      - name: Run markdownlint
-        if: github.event_name == 'pull_request'
-        shell: pwsh
-        run: |
-          $markdownlintArgs = @(
-            "--yes"
-            "markdownlint-cli2"
-            "README.md"
-            "docs/**/*.md"
-          )
-
-          & npx @markdownlintArgs
-
-      - name: Run markdownlint (advisory)
-        if: github.event_name != 'pull_request'
-        shell: pwsh
-        run: |
-          $markdownlintArgs = @(
-            "--yes"
-            "markdownlint-cli2"
-            "README.md"
-            "docs/**/*.md"
-          )
-
-          $hadIssues = $false
-
-          try {
-            & npx @markdownlintArgs
-            if ($LASTEXITCODE -ne 0) {
-              $hadIssues = $true
+              if (source) {
+                labels = source.labels.map((label) => label.name);
+                core.info(`Resolved labels from PR #${source.number}: ${labels.join(', ') || '(none)'}`);
+              }
+              else {
+                core.info(`No pull request associated with ${context.sha}. Using configured default increment.`);
+              }
             }
-          }
-          catch {
-            $hadIssues = $true
-            Write-Warning "markdownlint reported issues in advisory mode. $($_.Exception.Message)"
-          }
+            catch (error) {
+              core.warning(
+                `Unable to resolve pull request labels for ${context.sha}: ${error.message}. ` +
+                `Using configured default increment.`
+              );
+            }
 
-          if ($hadIssues) {
-            Write-Host "::warning::markdownlint found issues (advisory mode). Review step output."
-          }
+            // release:none wins over any increment label so an explicit skip is never overridden.
+            const skipRelease = labels.includes('release:none');
+            if (skipRelease) {
+              core.notice(`'release:none' label present on ${context.sha}. Skipping tag creation and release.`);
+            }
 
-          exit 0
+            core.setOutput('labels', JSON.stringify(labels));
+            core.setOutput('skip_release', skipRelease ? 'true' : 'false');
 
   detect-stage:
     # Resolve the release stage (alpha/beta/rc/production) from tag patterns defined
     # in pipeline-config/ref/release-stages.yaml. Used to select the GitHub Environment and filter publish targets.
     needs:
       - validate-repo-structure
-      - create-release-tag
-    if: ${{ github.event_name != 'pull_request' || (github.event.action == 'closed' && github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main') }}
     runs-on: windows-2022
     outputs:
       stage: ${{ steps.resolve.outputs.stage }}
@@ -454,14 +404,13 @@ jobs:
             if ($stage -notin @('production', 'alpha', 'beta', 'rc')) {
               throw "Invalid manual release stage '$stage'. Allowed values: production, alpha, beta, rc."
             }
+
+            Write-Host "Manual dispatch  ->  Stage: $stage"
+            "stage=$stage" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            return
           }
 
-          if ("${{ github.event_name }}" -eq "pull_request" -or "${{ github.event_name }}" -eq "workflow_dispatch") {
-            $tag = "${{ needs.create-release-tag.outputs.release_tag }}"
-          }
-          else {
-            $tag = "${{ github.ref_name }}"
-          }
+          $tag = "${{ github.ref_name }}"
 
           if ([string]::IsNullOrWhiteSpace($tag)) {
             throw "Unable to resolve release tag for stage detection."
@@ -469,7 +418,7 @@ jobs:
 
           $stageConfigFile = "${{ env.RELEASE_STAGE_CONFIG_FILE }}"
 
-          if ("${{ github.event_name }}" -ne "workflow_dispatch" -and (Test-Path $stageConfigFile)) {
+          if (Test-Path $stageConfigFile) {
             if (-not (Get-Command ConvertFrom-Yaml -ErrorAction SilentlyContinue)) {
               if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
                 Register-PSRepository -Default -ErrorAction Stop
@@ -506,9 +455,6 @@ jobs:
     # default-branch ci-core run when an exact-SHA match does not exist yet.
     needs:
       - validate-repo-structure
-      - spell-check
-      - markdownlint
-    if: ${{ github.event_name != 'pull_request' || (github.event.action == 'closed' && github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main') }}
     runs-on: windows-2022
 
     steps:
@@ -518,12 +464,10 @@ jobs:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const headSha = context.eventName === 'pull_request'
-              ? context.payload.pull_request.merge_commit_sha
-              : context.sha;
+            const headSha = context.sha;
             const eventName = context.eventName;
             const defaultBranch = context.payload.repository?.default_branch || "main";
-            const requiredJobs = ["validate-repo-structure", "spell-check", "markdownlint", "action-version-audit", "security-scan", "lint-and-test"];
+            const requiredJobs = ["validate-repo-structure", "spell-check", "markdownlint", "action-version-audit", "security-scan", "ci-powershell / validation-summary"];
             const apiRetryAttempts = 4;
             const apiRetryBaseDelayMs = 2000;
 
@@ -711,23 +655,15 @@ jobs:
             }
 
   create-release-tag:
-    # Create a release tag from policy on main branch pushes, merged PRs, and manual workflow_dispatch runs.
+    # Create a release tag from policy on main branch pushes and manual workflow_dispatch runs.
     needs:
       - validate-repo-structure
-      - spell-check
-      - markdownlint
       - verify-authoritative-ci
+      - detect-stage
+      - resolve-pr-labels
     if: >
-      (github.event_name != 'pull_request' ||
-       (github.event.action == 'closed' &&
-        github.event.pull_request.merged == true &&
-        github.event.pull_request.base.ref == 'main')) &&
+      needs.resolve-pr-labels.outputs.skip_release != 'true' &&
       ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-       (github.event_name == 'pull_request' &&
-        github.event.action == 'closed' &&
-        github.event.pull_request.merged == true &&
-        github.event.pull_request.base.ref == 'main' &&
-        !startsWith(github.event.pull_request.head.ref, 'automation/changelog-')) ||
        github.event_name == 'workflow_dispatch')
     runs-on: windows-2022
     outputs:
@@ -744,7 +680,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
         with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.merge_commit_sha || github.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
       - name: Fetch tags
@@ -756,12 +692,11 @@ jobs:
         id: versioning
         shell: pwsh
         env:
-          TARGET_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.merge_commit_sha || github.sha }}
-          PR_LABELS_JSON: '[]'
+          TARGET_SHA: ${{ github.sha }}
+          PR_LABELS_JSON: ${{ needs.resolve-pr-labels.outputs.labels }}
           PIPELINE_CONFIG_FILE: ${{ env.PIPELINE_CONFIG_FILE }}
           RELEASE_STATE_LOOKUP_FILE: ${{ env.RELEASE_STATE_LOOKUP_FILE }}
-          MANUAL_RELEASE_CONFIG_FILE: ${{ env.MANUAL_RELEASE_CONFIG_FILE }}
-          MANUAL_RELEASE_STAGE: ${{ inputs.release_stage }}
+          RESOLVED_STAGE: ${{ needs.detect-stage.outputs.stage }}
         run: |
           $ErrorActionPreference = 'Stop'
           $ProgressPreference = 'SilentlyContinue'
@@ -799,6 +734,11 @@ jobs:
                   minor = @()
                   patch = @()
                 }
+                inferredLabelOverrides = [ordered]@{
+                  major = @()
+                  minor = @()
+                  patch = @()
+                }
               }
               calver = [ordered]@{
                 format = "YYYY.MM.DD.PATCH"
@@ -808,16 +748,13 @@ jobs:
                   servicePack = 4
                   releaseStage = 5
                 }
-                labelOverrides = [ordered]@{
-                  patch = @()
-                }
               }
             }
 
             $lines = $RawYaml -split "`r?`n"
             $inVersioningPolicy = $false
             $activeSection = $null
-            $inLabelOverrides = $false
+            $activeOverrideSection = ''
             $activeIncrement = $null
 
             foreach ($line in $lines) {
@@ -828,7 +765,7 @@ jobs:
               if ($line -match '^versioningPolicy:\s*$') {
                 $inVersioningPolicy = $true
                 $activeSection = $null
-                $inLabelOverrides = $false
+                $activeOverrideSection = ''
                 $activeIncrement = $null
                 continue
               }
@@ -848,7 +785,7 @@ jobs:
 
               if ($line -match '^  (semver|calver):\s*$') {
                 $activeSection = $Matches[1]
-                $inLabelOverrides = $false
+                $activeOverrideSection = ''
                 $activeIncrement = $null
                 continue
               }
@@ -887,20 +824,20 @@ jobs:
                   continue
                 }
 
-                if ($line -match '^    labelOverrides:\s*$') {
-                  $inLabelOverrides = $true
+                if ($line -match '^    (labelOverrides|inferredLabelOverrides):\s*$') {
+                  $activeOverrideSection = $Matches[1]
                   $activeIncrement = $null
                   continue
                 }
 
-                if ($inLabelOverrides) {
+                if (-not [string]::IsNullOrWhiteSpace($activeOverrideSection)) {
                   if ($line -match '^      (major|minor|patch):\s*$') {
                     $activeIncrement = $Matches[1]
                     continue
                   }
 
                   if ($line -match '^        -\s*(.+)$' -and -not [string]::IsNullOrWhiteSpace($activeIncrement)) {
-                    $policy.semver.labelOverrides[$activeIncrement] += (Normalize-YamlScalar $Matches[1])
+                    $policy.semver.$activeOverrideSection[$activeIncrement] += (Normalize-YamlScalar $Matches[1])
                     continue
                   }
 
@@ -938,51 +875,10 @@ jobs:
                   $policy.calver.digitPositions.releaseStage = [int]$Matches[1]
                   continue
                 }
-
-                if ($line -match '^    labelOverrides:\s*$') {
-                  $inLabelOverrides = $true
-                  $activeIncrement = $null
-                  continue
-                }
-
-                if ($inLabelOverrides) {
-                  if ($line -match '^      patch:\s*$') {
-                    $activeIncrement = 'patch'
-                    continue
-                  }
-
-                  if ($line -match '^        -\s*(.+)$' -and $activeIncrement -eq 'patch') {
-                    $policy.calver.labelOverrides.patch += (Normalize-YamlScalar $Matches[1])
-                    continue
-                  }
-
-                  if ($line -match '^      [A-Za-z0-9_\-]+:\s*') {
-                    $activeIncrement = $null
-                  }
-                }
               }
             }
 
             return [pscustomobject]$policy
-          }
-
-          function Parse-ManualReleaseConfigFallback {
-            param([string]$RawYaml)
-
-            $config = [ordered]@{ defaultManualStage = $null }
-            $lines = $RawYaml -split "`r?`n"
-            foreach ($line in $lines) {
-              if ($line -match '^\s*#' -or [string]::IsNullOrWhiteSpace($line)) {
-                continue
-              }
-
-              if ($line -match '^defaultManualStage:\s*(.+)$') {
-                $config.defaultManualStage = Normalize-YamlScalar $Matches[1]
-                break
-              }
-            }
-
-            return [pscustomobject]$config
           }
 
           function Read-YamlConfig {
@@ -1062,6 +958,31 @@ jobs:
             }
 
             return "$today.0"
+          }
+
+          function Get-MatchedIncrements {
+            param(
+              $OverrideConfig,
+              [string[]]$Increments,
+              [string[]]$Labels
+            )
+
+            $found = New-Object System.Collections.Generic.List[string]
+            foreach ($increment in $Increments) {
+              $configuredLabels = @()
+              if ($null -ne $OverrideConfig -and $null -ne $OverrideConfig.$increment) {
+                $configuredLabels = @($OverrideConfig.$increment)
+              }
+
+              foreach ($label in $configuredLabels) {
+                if ($Labels -contains $label) {
+                  $found.Add($increment)
+                  break
+                }
+              }
+            }
+
+            return @($found | Select-Object -Unique)
           }
 
           function Get-ReleaseStateDigit {
@@ -1258,55 +1179,44 @@ jobs:
             }
 
             $prLabels = @()
-            if ($env:GITHUB_EVENT_NAME -eq 'pull_request') {
-              if (Test-Path $env:GITHUB_EVENT_PATH) {
-                $eventPayload = Get-Content -Path $env:GITHUB_EVENT_PATH -Raw | ConvertFrom-Json -ErrorAction Stop
-                if ($null -ne $eventPayload.pull_request -and $null -ne $eventPayload.pull_request.labels) {
-                  $prLabels = @($eventPayload.pull_request.labels | ForEach-Object { [string]$_.name })
-                }
-              }
-              elseif (-not [string]::IsNullOrWhiteSpace($env:PR_LABELS_JSON)) {
-                $prLabels = @((ConvertFrom-Json -InputObject $env:PR_LABELS_JSON))
-              }
+            if (-not [string]::IsNullOrWhiteSpace($env:PR_LABELS_JSON)) {
+              $prLabels = @((ConvertFrom-Json -InputObject $env:PR_LABELS_JSON))
             }
 
-            # Select appropriate label overrides based on versioning method
             if ($versioningMethod -eq 'calver') {
-              $labelOverridesConfig = $methodConfig.labelOverrides
               $relevantIncrements = @('patch')
             }
             else {
-              $labelOverridesConfig = $methodConfig.labelOverrides
               $relevantIncrements = @('major', 'minor', 'patch')
             }
 
-            $matchedIncrements = New-Object System.Collections.Generic.List[string]
-            foreach ($increment in $relevantIncrements) {
-              $configuredLabels = @()
-              if ($null -ne $labelOverridesConfig -and $null -ne $labelOverridesConfig.$increment) {
-                $configuredLabels = @($labelOverridesConfig.$increment)
-              }
+            # Wrap in @() because a single-element array unrolls to a scalar on return.
+            $explicitMatches = @(Get-MatchedIncrements -OverrideConfig $methodConfig.labelOverrides -Increments $relevantIncrements -Labels $prLabels)
 
-              if ($configuredLabels.Count -gt 0) {
-                foreach ($label in $configuredLabels) {
-                  if ($prLabels -contains $label) {
-                    $matchedIncrements.Add($increment)
-                    break
-                  }
-                }
-              }
+            if ($explicitMatches.Count -gt 1) {
+              throw "Conflicting release:* version increment labels detected on PR: $($explicitMatches -join ', ')."
             }
 
-            $distinctMatches = @($matchedIncrements | Select-Object -Unique)
-            if ($distinctMatches.Count -gt 1) {
-              throw "Conflicting version increment labels detected on PR: $($distinctMatches -join ', ')."
-            }
-
-            if ($versioningMethod -eq 'calver') {
-              $selectedIncrement = if ($distinctMatches.Count -eq 1) { $distinctMatches[0] } else { 'patch' }
+            if ($explicitMatches.Count -eq 1) {
+              $selectedIncrement = $explicitMatches[0]
+              $incrementSource = 'explicit label'
             }
             else {
-              $selectedIncrement = if ($distinctMatches.Count -eq 1) { $distinctMatches[0] } else { $defaultIncrement }
+              $inferredMatches = @(Get-MatchedIncrements -OverrideConfig $methodConfig.inferredLabelOverrides -Increments $relevantIncrements -Labels $prLabels)
+
+              if ($inferredMatches.Count -gt 0) {
+                # Triage labels are routinely combined, so take the largest bump rather than failing.
+                $selectedIncrement = @(@('major', 'minor', 'patch') | Where-Object { $inferredMatches -contains $_ })[0]
+                $incrementSource = 'inferred label'
+              }
+              elseif ($versioningMethod -eq 'calver') {
+                $selectedIncrement = 'patch'
+                $incrementSource = 'calver default'
+              }
+              else {
+                $selectedIncrement = $defaultIncrement
+                $incrementSource = 'configured default'
+              }
             }
 
             if ($null -eq $methodConfig.digitPositions) {
@@ -1389,50 +1299,70 @@ jobs:
             }
 
             $nextTag = $baseTag
-            $resolvedStage = 'production'
+            $resolvedStage = ([string]$env:RESOLVED_STAGE).Trim().ToLowerInvariant()
 
-            if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') {
-              $manualStage = ([string]$env:MANUAL_RELEASE_STAGE).Trim().ToLowerInvariant()
+            if ([string]::IsNullOrWhiteSpace($resolvedStage)) {
+              throw "Release stage was not provided by detect-stage."
+            }
 
-              if ([string]::IsNullOrWhiteSpace($manualStage) -or $manualStage -eq 'config') {
-                if (Test-Path $env:MANUAL_RELEASE_CONFIG_FILE) {
-                  $manualConfig = Read-YamlConfig -Path $env:MANUAL_RELEASE_CONFIG_FILE -ConfigName 'manual release config' -FallbackParser ${function:Parse-ManualReleaseConfigFallback} -CanUseConvertFromYaml $yamlSupported
-                  if ([string]::IsNullOrWhiteSpace([string]$manualConfig.defaultManualStage) -eq $false) {
-                    $manualStage = ([string]$manualConfig.defaultManualStage).Trim().ToLowerInvariant()
+            if ($resolvedStage -notin @('production', 'alpha', 'beta', 'rc')) {
+              throw "Invalid release stage '$resolvedStage'. Allowed values: production, alpha, beta, rc."
+            }
+
+            if ($resolvedStage -ne 'production') {
+              $preReleaseTags = @(git tag --list "$baseTag-$resolvedStage.*")
+              $nextPreReleaseNumber = 1
+              foreach ($tag in $preReleaseTags) {
+                if ($tag -match "^$([regex]::Escape($baseTag))-$resolvedStage\.(\d+)$") {
+                  $value = [int]$Matches[1]
+                  if ($value -ge $nextPreReleaseNumber) {
+                    $nextPreReleaseNumber = $value + 1
                   }
                 }
               }
 
-              if ([string]::IsNullOrWhiteSpace($manualStage)) {
-                $manualStage = 'production'
-              }
-
-              $resolvedStage = $manualStage
-
-              if ($manualStage -notin @('production', 'alpha', 'beta', 'rc')) {
-                throw "Invalid manual release stage '$manualStage'. Allowed values: production, alpha, beta, rc."
-              }
-
-              if ($manualStage -ne 'production') {
-                $preReleaseTags = @(git tag --list "$baseTag-$manualStage.*")
-                $nextPreReleaseNumber = 1
-                foreach ($tag in $preReleaseTags) {
-                  if ($tag -match "^$([regex]::Escape($baseTag))-$manualStage\.(\d+)$") {
-                    $value = [int]$Matches[1]
-                    if ($value -ge $nextPreReleaseNumber) {
-                      $nextPreReleaseNumber = $value + 1
-                    }
-                  }
-                }
-
-                $nextTag = "$baseTag-$manualStage.$nextPreReleaseNumber"
-              }
+              $nextTag = "$baseTag-$resolvedStage.$nextPreReleaseNumber"
             }
 
             $releaseStageDigit = Get-ReleaseStateDigit -Lookup $releaseStateLookup -StageName $resolvedStage
             $versionLookupCode = New-VersionLookupCode -ServicePackPosition $servicePackPosition -ReleaseStagePosition $releaseStagePosition -ServicePackDigit $servicePackDigit -ReleaseStageDigit $releaseStageDigit
             $numericVersionValues = [int]("$servicePackDigit$releaseStageDigit")
             $numericVersionTag = "$nextTag.$servicePackDigit.$releaseStageDigit"
+
+            # SemVer precedence is a property of the version string, so an alpha published after a
+            # beta on the same base version would sort below it and resolvers would ignore it.
+            $knownStageDigits = @{}
+            foreach ($entry in $releaseStateLookup.PSObject.Properties) {
+              $knownStageDigits[([string]$entry.Value).Trim().ToLowerInvariant()] = [int]$entry.Name
+            }
+            if ($knownStageDigits.ContainsKey('release')) {
+              $knownStageDigits['production'] = $knownStageDigits['release']
+            }
+
+            $highestPublishedDigit = -1
+            $highestPublishedTag = $null
+            foreach ($tag in @(git tag --list "$baseTag*")) {
+              $tagStage = $null
+              if ($tag -eq $baseTag) {
+                $tagStage = 'production'
+              }
+              elseif ($tag -match "^$([regex]::Escape($baseTag))-([A-Za-z]+)\.\d+$") {
+                $tagStage = $Matches[1].ToLowerInvariant()
+              }
+
+              if ($null -eq $tagStage -or -not $knownStageDigits.ContainsKey($tagStage)) {
+                continue
+              }
+
+              if ($knownStageDigits[$tagStage] -gt $highestPublishedDigit) {
+                $highestPublishedDigit = $knownStageDigits[$tagStage]
+                $highestPublishedTag = $tag
+              }
+            }
+
+            if ($highestPublishedDigit -ge 0 -and $releaseStageDigit -lt $highestPublishedDigit) {
+              throw "Release stage regression: stage '$resolvedStage' is earlier than '$highestPublishedTag', already published for $baseTag. Bump the base version instead of moving the stage backwards."
+            }
 
             if (Test-GitTagExists -TagName $nextTag) {
               throw "Immutable release policy violation: release tag '$nextTag' already exists. Reusing existing release tags is not allowed."
@@ -1450,6 +1380,7 @@ jobs:
               "## Release Versioning"
               "- Versioning method: $versioningMethod"
               "- Selected increment: $selectedIncrement"
+              "- Increment source: $incrementSource"
               "- Service pack digit: $servicePackDigit"
               "- Release stage digit: $releaseStageDigit"
               "- Numeric value (integer): $numericVersionValues"
@@ -1468,16 +1399,14 @@ jobs:
             throw
           }
 
-      - name: Create release tag from merged PR commit
+      - name: Create release tag
         if: steps.versioning.outputs.tag_already_exists != 'true'
         uses: actions/github-script@v8
         with:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const targetSha = context.eventName === 'pull_request'
-              ? context.payload.pull_request.merge_commit_sha
-              : context.sha;
+            const targetSha = context.sha;
             const canonicalTag = `${{ steps.versioning.outputs.resolved_tag }}`;
 
             // Create canonical tag (SemVer/CalVer compliant)
@@ -1492,20 +1421,9 @@ jobs:
   prepare-release:
     needs:
       - validate-repo-structure
-      - spell-check
-      - markdownlint
       - verify-authoritative-ci
       - create-release-tag
       - detect-stage
-    if: >
-      (github.event_name != 'pull_request' ||
-       (github.event.action == 'closed' &&
-        github.event.pull_request.merged == true &&
-        github.event.pull_request.base.ref == 'main')) &&
-      (github.event_name != 'pull_request' ||
-       (github.event.pull_request.merged == true &&
-        github.event.pull_request.base.ref == 'main' &&
-        !startsWith(github.event.pull_request.head.ref, 'automation/changelog-')))
     runs-on: windows-2022
     outputs:
       has_powershell: ${{ steps.detect.outputs.has_powershell }}
@@ -2553,16 +2471,17 @@ jobs:
           if (Test-Path $releasePackagesConfigFile) {
             $releasePackagesConfig = Get-Content -Path $releasePackagesConfigFile -Raw | ConvertFrom-Yaml -ErrorAction Stop
 
+            $packageMode = [string]$releasePackagesConfig.packageMode
+            if ($packageMode -notin @('single', 'multi', 'multi-with-default')) {
+              throw "Configuration '$releasePackagesConfigFile' must define packageMode as 'single', 'multi', or 'multi-with-default'."
+            }
+
             if ($null -ne $releasePackagesConfig.allowPathOverlaps) {
               $allowPathOverlaps = [System.Convert]::ToBoolean($releasePackagesConfig.allowPathOverlaps)
             }
 
-            $singlePackageEnabled = $false
             $singlePackageName = $defaultPackageName
             if ($null -ne $releasePackagesConfig.singlePackage) {
-              if ($null -ne $releasePackagesConfig.singlePackage.enabled) {
-                $singlePackageEnabled = [System.Convert]::ToBoolean($releasePackagesConfig.singlePackage.enabled)
-              }
               if (-not [string]::IsNullOrWhiteSpace($releasePackagesConfig.singlePackage.releasePackageName)) {
                 $singlePackageName = [string]$releasePackagesConfig.singlePackage.releasePackageName
               }
@@ -2571,6 +2490,14 @@ jobs:
             $configuredPackages = @()
             if ($null -ne $releasePackagesConfig.releasePackages) {
               $configuredPackages = @($releasePackagesConfig.releasePackages)
+            }
+
+            if ($packageMode -eq 'single' -and $configuredPackages.Count -gt 0) {
+              throw "Configuration '$releasePackagesConfigFile' cannot define releasePackages when packageMode is 'single'."
+            }
+
+            if ($packageMode -in @('multi', 'multi-with-default') -and $configuredPackages.Count -eq 0) {
+              throw "Configuration '$releasePackagesConfigFile' must define at least one releasePackages entry when packageMode is '$packageMode'."
             }
 
             foreach ($package in $configuredPackages) {
@@ -2606,7 +2533,7 @@ jobs:
               })
             }
 
-            if ($singlePackageEnabled) {
+            if ($packageMode -eq 'multi-with-default') {
               $packageDefinitions.Add([pscustomobject]@{
                 name = $singlePackageName
                 includeRules = @('.')
@@ -2615,7 +2542,7 @@ jobs:
               })
             }
 
-            if ($packageDefinitions.Count -eq 0) {
+            if ($packageMode -eq 'single') {
               $packageDefinitions.Add([pscustomobject]@{
                 name = $defaultPackageName
                 includeRules = @('.')
@@ -2625,12 +2552,7 @@ jobs:
             }
           }
           else {
-            $packageDefinitions.Add([pscustomobject]@{
-              name = $defaultPackageName
-              includeRules = @('.')
-              excludeRules = @()
-              description = 'Default single-package output'
-            })
+            throw "Required release package configuration '$releasePackagesConfigFile' is missing."
           }
 
           $seenPackageNames = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::OrdinalIgnoreCase)
@@ -2748,7 +2670,7 @@ jobs:
       - prepare-release
       - create-release-tag
       - detect-stage
-    if: ${{ (github.event_name != 'pull_request' || (github.event.action == 'closed' && github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main')) && needs.prepare-release.result == 'success' }}
+    if: ${{ needs.prepare-release.result == 'success' }}
     runs-on: windows-2022
 
     env:
@@ -3023,7 +2945,6 @@ jobs:
         if: >
           startsWith(github.ref, 'refs/tags/') ||
           github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'pull_request' && github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main') ||
           (github.event_name == 'push' && github.ref == 'refs/heads/main')
         shell: pwsh
         env:
@@ -3069,11 +2990,10 @@ jobs:
 
   notify:
     # Send release notifications for failure/cancelled and opt-in success.
-    if: ${{ (github.event_name != 'pull_request' || (github.event.action == 'closed' && github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main')) && always() }}
+    if: ${{ always() }}
     needs:
       - validate-repo-structure
-      - spell-check
-      - markdownlint
+      - resolve-pr-labels
       - verify-authoritative-ci
       - create-release-tag
       - detect-stage
@@ -3092,11 +3012,10 @@ jobs:
 
   incident:
     # Open or update deduplicated pipeline incident issues for failures/cancellations.
-    if: ${{ (github.event_name != 'pull_request' || (github.event.action == 'closed' && github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main')) && always() && (contains(join(needs.*.result, ','), 'failure') || contains(join(needs.*.result, ','), 'cancelled')) }}
+    if: ${{ always() && (contains(join(needs.*.result, ','), 'failure') || contains(join(needs.*.result, ','), 'cancelled')) }}
     needs:
       - validate-repo-structure
-      - spell-check
-      - markdownlint
+      - resolve-pr-labels
       - verify-authoritative-ci
       - create-release-tag
       - detect-stage
@@ -3116,11 +3035,10 @@ jobs:
 
   workflow-outcome-summary:
     # Emit a final matrix of release workflow job outcomes.
-    if: ${{ (github.event_name != 'pull_request' || (github.event.action == 'closed' && github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main')) && always() }}
+    if: ${{ always() }}
     needs:
       - validate-repo-structure
-      - spell-check
-      - markdownlint
+      - resolve-pr-labels
       - verify-authoritative-ci
       - create-release-tag
       - detect-stage
@@ -3137,6 +3055,17 @@ jobs:
           NEEDS_JSON: ${{ toJson(needs) }}
         run: |
           $needs = $env:NEEDS_JSON | ConvertFrom-Json -AsHashtable
+
+          @(
+            '## Run Correlation'
+            '- Repository: ${{ github.repository }}'
+            '- Ref: ${{ github.ref }}'
+            '- Commit: ${{ github.sha }}'
+            '- Actor: ${{ github.actor }}'
+            '- Run: #${{ github.run_number }} (attempt ${{ github.run_attempt }})'
+            '- URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'
+            ''
+          ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
 
           @(
             '## Final Outcome Matrix'

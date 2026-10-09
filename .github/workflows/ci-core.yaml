@@ -11,6 +11,7 @@ on:
   pull_request:
     branches:
       - main
+      - dev
     types:
       - opened
       - synchronize
@@ -587,6 +588,11 @@ jobs:
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true && github.event.pull_request.merge_commit_sha || github.sha }}
 
+      - name: Initialize YAML parser for action audit
+        shell: pwsh
+        run: |
+          . ./scripts/Initialize-PowerShellYaml.ps1
+
       - name: Validate action version pinning
         shell: pwsh
         run: |
@@ -779,7 +785,7 @@ jobs:
             "- Optional path decisions: $($optionalPaths -join '; ')"
           ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
 
-  validate-package-dependency-availability:
+  package-dependency-check:
     # Validate package release sources early so missing upstream assets fail PR checks before merge.
     needs: validate-repo-structure
     if: >
@@ -1028,8 +1034,8 @@ jobs:
             '- All configured dependency release packages are available.'
           ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
 
-  lint-and-test:
-    # PowerShell validation path (job id preserved for release gate compatibility).
+  ci-powershell:
+    # PowerShell validation path.
     needs:
       - spell-check
       - markdownlint
@@ -1039,12 +1045,11 @@ jobs:
     if: >
       github.event_name == 'push' ||
       (github.event_name == 'pull_request' &&
-      github.event.pull_request.base.ref == 'main' &&
+      (github.event.pull_request.base.ref == 'main' || github.event.pull_request.base.ref == 'dev') &&
       (contains(fromJson('["opened","synchronize","reopened"]'), github.event.action) ||
       (github.event.action == 'closed' && github.event.pull_request.merged == true)))
     uses: ./.github/workflows/ci-powershell.yaml
     with:
-      ref: ${{ github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true && github.event.pull_request.merge_commit_sha || github.sha }}
       dependency-file: pipeline-config/ref/test-dependencies.yaml
 
   ci-dotnet:
@@ -1085,7 +1090,7 @@ jobs:
       github.event.action == 'closed' &&
       github.event.pull_request.merged == true &&
       github.event.pull_request.base.ref == 'main' &&
-      needs.lint-and-test.result == 'success' &&
+      needs.ci-powershell.result == 'success' &&
       (needs.ci-dotnet.result == 'success' || needs.ci-dotnet.result == 'skipped') &&
       (needs.ci-python.result == 'success' || needs.ci-python.result == 'skipped')
     needs:
@@ -1093,7 +1098,7 @@ jobs:
       - markdownlint
       - action-version-audit
       - security-scan
-      - lint-and-test
+      - ci-powershell
       - ci-dotnet
       - ci-python
     runs-on: windows-2022
@@ -1137,22 +1142,29 @@ jobs:
           path: out/${{ github.event.repository.name }}-pr-${{ github.event.pull_request.number }}-${{ github.sha }}.zip
 
   update-changelog:
-    # Update CHANGELOG.md directly in PR branches targeting main during review.
+    # Update CHANGELOG.md directly in PR branches targeting dev during review.
     # Bot commits include a skip token to avoid recursive CI runs.
+    # The head branch exclusions matter: the bot pushes to the head branch, and the enterprise
+    # ruleset requires CodeQL results for pushes to main, master, dev, develop, and release/**.
+    # A commit created during the run has no results yet, so those pushes are always rejected.
     if: >
       github.event_name == 'pull_request' &&
-      github.event.pull_request.base.ref == 'main' &&
+      github.event.pull_request.base.ref == 'dev' &&
       contains(fromJson('["opened","synchronize","reopened"]'), github.event.action) &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       !endsWith(github.actor, '[bot]') &&
-      !startsWith(github.event.pull_request.head.ref, 'automation/changelog-')
+      !startsWith(github.event.pull_request.head.ref, 'automation/changelog-') &&
+      !startsWith(github.event.pull_request.head.ref, 'release/') &&
+      github.event.pull_request.head.ref != 'main' &&
+      github.event.pull_request.head.ref != 'master' &&
+      github.event.pull_request.head.ref != 'develop'
     needs:
       - validate-repo-structure
       - spell-check
       - markdownlint
       - action-version-audit
       - security-scan
-      - lint-and-test
+      - ci-powershell
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -1465,8 +1477,8 @@ jobs:
       - action-version-audit
       - security-scan
       - changes
-      - validate-package-dependency-availability
-      - lint-and-test
+      - package-dependency-check
+      - ci-powershell
       - ci-dotnet
       - ci-python
       - build-and-package
@@ -1491,8 +1503,8 @@ jobs:
       - action-version-audit
       - security-scan
       - changes
-      - validate-package-dependency-availability
-      - lint-and-test
+      - package-dependency-check
+      - ci-powershell
       - ci-dotnet
       - ci-python
       - build-and-package
@@ -1518,8 +1530,8 @@ jobs:
       - action-version-audit
       - security-scan
       - changes
-      - validate-package-dependency-availability
-      - lint-and-test
+      - package-dependency-check
+      - ci-powershell
       - ci-dotnet
       - ci-python
       - build-and-package
@@ -1534,6 +1546,17 @@ jobs:
           NEEDS_JSON: ${{ toJson(needs) }}
         run: |
           $needs = $env:NEEDS_JSON | ConvertFrom-Json -AsHashtable
+
+          @(
+            '## Run Correlation'
+            '- Repository: ${{ github.repository }}'
+            '- Ref: ${{ github.ref }}'
+            '- Commit: ${{ github.sha }}'
+            '- Actor: ${{ github.actor }}'
+            '- Run: #${{ github.run_number }} (attempt ${{ github.run_attempt }})'
+            '- URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'
+            ''
+          ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
 
           @(
             '## Final Outcome Matrix'
