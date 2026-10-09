@@ -1,3 +1,8 @@
+<#
+    .SYNOPSIS
+    Pester tests for certificate enrollment helpers.
+#>
+
 BeforeAll {
     $modulePath = Join-Path -Path $PSScriptRoot -ChildPath '..\PSPkinit.psd1'
     Import-Module -Name $modulePath -Force
@@ -60,8 +65,10 @@ Describe 'ConvertTo-PkinitSidSecurityExtensionValue' {
 Describe 'New-PkinitSidSecurityExtension' {
     BeforeAll {
         Mock -CommandName New-PkinitComObject -ModuleName PSPkinit -MockWith {
-            switch ($ProgId) {
-                'X509Enrollment.CObjectId' {
+            switch ($ProgId)
+            {
+                'X509Enrollment.CObjectId'
+                {
                     $fake = [PSCustomObject]@{}
                     Add-Member -InputObject $fake -MemberType ScriptMethod -Name InitializeFromValue -Value {
                         param($Value)
@@ -69,7 +76,8 @@ Describe 'New-PkinitSidSecurityExtension' {
                     }
                     return $fake
                 }
-                'X509Enrollment.CX509Extension' {
+                'X509Enrollment.CX509Extension'
+                {
                     $fake = [PSCustomObject]@{}
                     Add-Member -InputObject $fake -MemberType ScriptMethod -Name Initialize -Value {
                         param($Oid, $EncodingType, $Value)
@@ -110,15 +118,18 @@ Describe 'New-PkinitCertificateSigningRequest' {
         # assert on the *values* passed through the whole chain, not just that
         # "some COM object was created."
         Mock -CommandName New-PkinitComObject -ModuleName PSPkinit -MockWith {
-            switch ($ProgId) {
-                'X509Enrollment.CX509PrivateKey' {
+            switch ($ProgId)
+            {
+                'X509Enrollment.CX509PrivateKey'
+                {
                     $fake = [PSCustomObject]@{ ProviderName = $null; Length = $null; KeySpec = $null; MachineContext = $null; ExportPolicy = $null }
                     Add-Member -InputObject $fake -MemberType ScriptMethod -Name Create -Value {
                         $global:PkinitTestPrivateKey = $this
                     }
                     return $fake
                 }
-                'X509Enrollment.CX500DistinguishedName' {
+                'X509Enrollment.CX500DistinguishedName'
+                {
                     $fake = [PSCustomObject]@{ EncodedName = $null }
                     Add-Member -InputObject $fake -MemberType ScriptMethod -Name Encode -Value {
                         param($Name, $Flags)
@@ -127,7 +138,8 @@ Describe 'New-PkinitCertificateSigningRequest' {
                     }
                     return $fake
                 }
-                'X509Enrollment.CAlternativeName' {
+                'X509Enrollment.CAlternativeName'
+                {
                     $fake = [PSCustomObject]@{}
                     Add-Member -InputObject $fake -MemberType ScriptMethod -Name InitializeFromString -Value {
                         param($AlternativeNameType, $Value)
@@ -136,7 +148,8 @@ Describe 'New-PkinitCertificateSigningRequest' {
                     }
                     return $fake
                 }
-                'X509Enrollment.CAlternativeNames' {
+                'X509Enrollment.CAlternativeNames'
+                {
                     $fake = [System.Collections.Generic.List[object]]::new()
                     $global:PkinitTestAltNamesList = $fake
                     # ",$fake" (not "$fake") - an empty List[object] returned bare would be
@@ -145,7 +158,8 @@ Describe 'New-PkinitCertificateSigningRequest' {
                     # collection object itself is emitted, not its (currently empty) contents.
                     return , $fake
                 }
-                'X509Enrollment.CX509ExtensionAlternativeNames' {
+                'X509Enrollment.CX509ExtensionAlternativeNames'
+                {
                     $fake = [PSCustomObject]@{}
                     Add-Member -InputObject $fake -MemberType ScriptMethod -Name InitializeEncode -Value {
                         param($AlternativeNames)
@@ -153,7 +167,8 @@ Describe 'New-PkinitCertificateSigningRequest' {
                     }
                     return $fake
                 }
-                'X509Enrollment.CX509CertificateRequestPkcs10' {
+                'X509Enrollment.CX509CertificateRequestPkcs10'
+                {
                     $extensions = [System.Collections.Generic.List[object]]::new()
                     $global:PkinitTestExtensionsList = $extensions
                     $fake = [PSCustomObject]@{ Subject = $null; X509Extensions = $extensions }
@@ -164,7 +179,8 @@ Describe 'New-PkinitCertificateSigningRequest' {
                     Add-Member -InputObject $fake -MemberType ScriptMethod -Name Encode -Value { }
                     return $fake
                 }
-                'X509Enrollment.CX509Enrollment' {
+                'X509Enrollment.CX509Enrollment'
+                {
                     $fake = [PSCustomObject]@{}
                     Add-Member -InputObject $fake -MemberType ScriptMethod -Name InitializeFromRequest -Value {
                         param($Request)
@@ -177,12 +193,14 @@ Describe 'New-PkinitCertificateSigningRequest' {
                     }
                     return $fake
                 }
-                'X509Enrollment.CObjectId' {
+                'X509Enrollment.CObjectId'
+                {
                     $fake = [PSCustomObject]@{}
                     Add-Member -InputObject $fake -MemberType ScriptMethod -Name InitializeFromValue -Value { param($Value) }
                     return $fake
                 }
-                'X509Enrollment.CX509Extension' {
+                'X509Enrollment.CX509Extension'
+                {
                     $fake = [PSCustomObject]@{}
                     Add-Member -InputObject $fake -MemberType ScriptMethod -Name Initialize -Value { param($Oid, $EncodingType, $Value) }
                     $global:PkinitTestSidExtensionObject = $fake
@@ -345,3 +363,4 @@ Describe 'Get-PkinitCertificateFromStore' {
         $result | Should -BeNullOrEmpty
     }
 }
+

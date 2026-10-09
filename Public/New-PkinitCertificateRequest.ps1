@@ -1,4 +1,10 @@
-function New-PkinitCertificateRequest {
+<#
+    .SYNOPSIS
+    Requests a certificate from an AD CS CA using the native CertEnroll/CertificateAuthority COM object model.
+#>
+
+function New-PkinitCertificateRequest
+{
     <#
         .SYNOPSIS
         Requests a certificate from an AD CS CA, with a caller-supplied Subject
@@ -146,7 +152,8 @@ function New-PkinitCertificateRequest {
         [switch] $MachineContext
     )
 
-    try {
+    try
+    {
         $csrResult = New-PkinitCertificateSigningRequest -Subject $Subject -San $San -SanType $SanType -Sid $Sid `
             -KeyLength $KeyLength -ProviderName $ProviderName -MachineContext:$MachineContext
 
@@ -159,20 +166,24 @@ function New-PkinitCertificateRequest {
         $issuedCertPreview = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($issuedCertBytes)
 
         $installedCert = Get-PkinitCertificateFromStore -Thumbprint $issuedCertPreview.Thumbprint -MachineContext:$MachineContext
-        if (-not $installedCert) {
+        if (-not $installedCert)
+        {
             throw "Certificate was issued (thumbprint $($issuedCertPreview.Thumbprint)) but was not found in the certificate store after install."
         }
 
         return [PSCustomObject]@{
-            PSTypeName  = 'PSPkinit.CertificateRequestResult'
+            PSTypeName = 'PSPkinit.CertificateRequestResult'
             Certificate = $installedCert
-            Thumbprint  = $installedCert.Thumbprint
-            Subject     = $Subject
-            San         = $San
-            SanType     = $SanType
+            Thumbprint = $installedCert.Thumbprint
+            Subject = $Subject
+            San = $San
+            SanType = $SanType
         }
-    } catch {
+    }
+    catch
+    {
         $PSCmdlet.ThrowTerminatingError([System.Management.Automation.ErrorRecord]::new(
                 $_.Exception, 'PkinitCertificateRequestFailed', [System.Management.Automation.ErrorCategory]::InvalidOperation, $null))
     }
 }
+

@@ -1,8 +1,14 @@
+<#
+    .SYNOPSIS
+    Pester tests for New-PkinitCertificateRequest.
+#>
+
 BeforeAll {
     $modulePath = Join-Path -Path $PSScriptRoot -ChildPath '..\PSPkinit.psd1'
     Import-Module -Name $modulePath -Force
 
-    function New-TestSelfSignedCertificate {
+    function New-TestSelfSignedCertificate
+    {
         <#
             .SYNOPSIS
             Test-only helper: a throwaway self-signed cert, used here purely to
@@ -79,10 +85,13 @@ Describe 'New-PkinitCertificateRequest' {
 
         It 'surfaces a terminating InvalidOperation error' {
             $errorRecord = $null
-            try {
+            try
+            {
                 New-PkinitCertificateRequest -Subject 'CN=Test User' -San 'user@adcs.goat' `
                     -Template 'UserWithSIDExtension' -CertificateAuthority 'ADCSGOAT-CA\LabRootCA1' -ErrorAction Stop
-            } catch {
+            }
+            catch
+            {
                 $errorRecord = $_
             }
 
@@ -112,3 +121,4 @@ Describe 'New-PkinitCertificateRequest' {
         }
     }
 }
+

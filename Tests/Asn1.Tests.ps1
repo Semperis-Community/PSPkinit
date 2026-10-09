@@ -1,3 +1,8 @@
+<#
+    .SYNOPSIS
+    Pester tests for ASN.1 helper functions.
+#>
+
 BeforeAll {
     . $PSScriptRoot/../Private/Asn1.ps1
 }

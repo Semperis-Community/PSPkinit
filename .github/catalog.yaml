@@ -1,0 +1,13 @@
+# Sample per-repository catalog metadata file.
+#
+# Copy this file to .github/catalog.yaml in each repository.
+# The catalog workflow expects at least two shepherds.
+#
+# Preferred format captures both full name and GitHub username.
+# Legacy string entries are still supported.
+
+shepherds:
+  - name: Jake Hildreth
+    github: jakehildrethwork
+  - name: CJ Ramseyer
+    github: cjramseyer

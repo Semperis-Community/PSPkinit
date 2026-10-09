@@ -1,0 +1,1036 @@
+name: Update SharePoint Catalog
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: SharePoint target to update
+        required: true
+        type: choice
+        default: sandbox
+        options:
+          - sandbox
+          - production
+          - both
+  schedule:
+    - cron: '15 5 * * *'
+
+permissions:
+  contents: read
+
+env:
+  PUBLISH_TARGETS_FILE: pipeline-config/ref/publish-targets.yaml
+  CATALOG_CONFIG_FILE: pipeline-config/ref/catalog-config.yaml
+
+jobs:
+  validate-run-policy:
+    runs-on: windows-2022
+    outputs:
+      allowed: ${{ steps.policy.outputs.allowed }}
+    steps:
+      - name: Validate repository and trigger policy
+        id: policy
+        shell: pwsh
+        env:
+          WORKFLOW_REPOSITORY: ${{ github.repository }}
+          WORKFLOW_EVENT: ${{ github.event_name }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+
+          $repository = [string]$env:WORKFLOW_REPOSITORY
+          $eventName = [string]$env:WORKFLOW_EVENT
+
+          $allowed = $false
+          if ($repository -eq 'Semperis-Community/.github') {
+            if ($eventName -eq 'schedule' -or $eventName -eq 'workflow_dispatch') {
+              $allowed = $true
+            }
+          }
+          elseif ($repository -eq 'Semperis-Community/pipeline-build') {
+            if ($eventName -eq 'workflow_dispatch') {
+              $allowed = $true
+            }
+          }
+
+          "allowed=$($allowed.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+          if (-not $allowed) {
+            Write-Warning "Run policy skip: repository '$repository' is not allowed to execute this workflow for event '$eventName'. Allowed: Semperis-Community/.github -> schedule, workflow_dispatch; Semperis-Community/pipeline-build -> workflow_dispatch only."
+            return
+          }
+
+          Write-Host "Run policy validated for repository '$repository' and event '$eventName'."
+
+  build-catalog:
+    needs: validate-run-policy
+    if: needs.validate-run-policy.outputs.allowed == 'true'
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Create catalog repository app token
+        id: catalog_app_token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.CATALOG_APP_ID }}
+          private-key: ${{ secrets.CATALOG_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Build catalog artifacts from organization repositories
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ steps.catalog_app_token.outputs.token }}
+          ORG_NAME: ${{ github.repository_owner }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+
+          if ([string]::IsNullOrWhiteSpace($env:GITHUB_TOKEN)) {
+            throw 'GITHUB_TOKEN is required to enumerate organization repositories.'
+          }
+
+          if (-not (Get-Command ConvertFrom-Yaml -ErrorAction SilentlyContinue)) {
+            if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
+              Register-PSRepository -Default -ErrorAction Stop
+            }
+            Install-Module -Name powershell-yaml -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+            Import-Module powershell-yaml -ErrorAction Stop
+          }
+
+          function Invoke-GitHubApi {
+            param(
+              [Parameter(Mandatory = $true)][string]$Uri,
+              [switch]$SuppressNotFound
+            )
+
+            $headers = @{
+              Authorization = "Bearer $env:GITHUB_TOKEN"
+              Accept        = 'application/vnd.github+json'
+              'X-GitHub-Api-Version' = '2022-11-28'
+            }
+
+            try {
+                $response = Invoke-WebRequest -Method Get -Uri $Uri -Headers $headers -ErrorAction Stop
+                if ([string]::IsNullOrWhiteSpace($response.Content)) {
+                  return $null
+                }
+
+                return ($response.Content | ConvertFrom-Json -NoEnumerate -ErrorAction Stop)
+            }
+            catch {
+              if ($SuppressNotFound -and $_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 404) {
+                return $null
+              }
+              throw
+            }
+          }
+
+          function Get-ReleaseStageFromTag {
+            param([string]$Tag)
+
+            if ([string]::IsNullOrWhiteSpace($Tag)) {
+              return $null
+            }
+
+            if ($Tag -match '-alpha(\.|$)') { return 'alpha' }
+            if ($Tag -match '-beta(\.|$)') { return 'beta' }
+            if ($Tag -match '-rc(\.|$)') { return 'rc' }
+            return 'production'
+          }
+
+          function Get-UrlEncodedRelativePath {
+            param([string]$RelativePath)
+
+            if ([string]::IsNullOrWhiteSpace($RelativePath)) {
+              return ''
+            }
+
+            return (([string]$RelativePath -split '/') | ForEach-Object { [System.Uri]::EscapeDataString($_) }) -join '/'
+          }
+
+          function Get-Shepherds {
+            param(
+              [Parameter(Mandatory = $true)][string]$Owner,
+              [Parameter(Mandatory = $true)][string]$RepositoryName
+            )
+
+            $catalogUri = "https://api.github.com/repos/$Owner/$RepositoryName/contents/.github/catalog.yaml"
+            $catalogFile = Invoke-GitHubApi -Uri $catalogUri -SuppressNotFound
+            if ($null -eq $catalogFile) {
+              return @()
+            }
+
+            if ([string]::IsNullOrWhiteSpace([string]$catalogFile.content)) {
+              return @()
+            }
+
+            $decoded = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String(([string]$catalogFile.content).Replace("`n", '')))
+            $parsed = $decoded | ConvertFrom-Yaml -ErrorAction Stop
+            if ($null -eq $parsed -or $null -eq $parsed.shepherds) {
+              return @()
+            }
+
+            $resolvedShepherds = New-Object System.Collections.Generic.List[string]
+            foreach ($entry in @($parsed.shepherds)) {
+              if ($entry -is [string]) {
+                $value = ([string]$entry).Trim()
+                if (-not [string]::IsNullOrWhiteSpace($value)) {
+                  $resolvedShepherds.Add($value)
+                }
+                continue
+              }
+
+              $github = [string]$entry.github
+              if ([string]::IsNullOrWhiteSpace($github)) { $github = [string]$entry.username }
+              if ([string]::IsNullOrWhiteSpace($github)) { $github = [string]$entry.githubUsername }
+
+              $fullName = [string]$entry.name
+              if ([string]::IsNullOrWhiteSpace($fullName)) { $fullName = [string]$entry.fullName }
+
+              $github = $github.Trim()
+              $fullName = $fullName.Trim()
+
+              if (-not [string]::IsNullOrWhiteSpace($fullName) -and -not [string]::IsNullOrWhiteSpace($github)) {
+                $resolvedShepherds.Add("$fullName (@$github)")
+              }
+              elseif (-not [string]::IsNullOrWhiteSpace($fullName)) {
+                $resolvedShepherds.Add($fullName)
+              }
+              elseif (-not [string]::IsNullOrWhiteSpace($github)) {
+                $resolvedShepherds.Add("@$github")
+              }
+            }
+
+            return @($resolvedShepherds)
+          }
+
+          function Get-RepositoryReadmeMarkdown {
+            param(
+              [Parameter(Mandatory = $true)][string]$Owner,
+              [Parameter(Mandatory = $true)][string]$RepositoryName
+            )
+
+            $readmeUri = "https://api.github.com/repos/$Owner/$RepositoryName/readme"
+            $readme = Invoke-GitHubApi -Uri $readmeUri -SuppressNotFound
+            if ($null -eq $readme -or [string]::IsNullOrWhiteSpace([string]$readme.name)) {
+              return $null
+            }
+
+            if ([string]$readme.name -notmatch '(?i)^readme\.md$') {
+              return $null
+            }
+
+            if ([string]::IsNullOrWhiteSpace([string]$readme.content)) {
+              return $null
+            }
+
+            return [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String(([string]$readme.content).Replace("`n", '')))
+          }
+
+          $excludedByName = @{}
+          $excludedList = @()
+          $suppressInlineWarnings = $false
+          $catalogConfig = $null
+          if (Test-Path $env:CATALOG_CONFIG_FILE) {
+            $catalogConfig = Get-Content -Path $env:CATALOG_CONFIG_FILE -Raw | ConvertFrom-Yaml -ErrorAction Stop
+            if ($null -ne $catalogConfig -and $null -ne $catalogConfig.excludedRepositories) {
+              foreach ($entry in @($catalogConfig.excludedRepositories)) {
+                $name = [string]$entry.name
+                if ([string]::IsNullOrWhiteSpace($name)) {
+                  continue
+                }
+
+                $reason = [string]$entry.reason
+                if ([string]::IsNullOrWhiteSpace($reason)) {
+                  $reason = 'other'
+                }
+
+                $key = $name.Trim().ToLowerInvariant()
+                if (-not $excludedByName.ContainsKey($key)) {
+                  $excludedByName[$key] = $reason
+                  $excludedList += [pscustomobject]@{
+                    name = $name.Trim()
+                    reason = $reason
+                  }
+                }
+              }
+            }
+          }
+          else {
+            Write-Host "::warning::Catalog config file '$env:CATALOG_CONFIG_FILE' not found. No explicit exclusions will be applied."
+          }
+
+          if ($null -ne $catalogConfig -and $null -ne $catalogConfig.pageOptions) {
+            $suppressInlineWarnings = [bool]$catalogConfig.pageOptions.suppressInlineWarnings
+          }
+
+          $org = $env:ORG_NAME
+          if ([string]::IsNullOrWhiteSpace($org)) {
+            throw 'Unable to resolve organization name from github.repository_owner.'
+          }
+
+          Write-Host '::group::Enumerating organization repositories'
+          $repositories = New-Object System.Collections.Generic.List[object]
+          $page = 1
+          do {
+            if ($page -gt 1000) {
+              throw "Repository enumeration exceeded 1000 pages. The GitHub API response is likely malformed or authentication failed mid-run."
+            }
+
+            $repoUri = "https://api.github.com/orgs/$org/repos?type=all&per_page=100&page=$page"
+            $pageResults = @()
+            $repoPageResponse = Invoke-GitHubApi -Uri $repoUri
+
+            if ($null -ne $repoPageResponse) {
+              if ($repoPageResponse -is [System.Array]) {
+                $pageResults = @($repoPageResponse)
+              }
+              elseif ($repoPageResponse.PSObject.Properties['message']) {
+                throw "GitHub API returned an error while enumerating repositories on page ${page}: $([string]$repoPageResponse.message)"
+              }
+              elseif ($repoPageResponse.PSObject.Properties['name'] -and $repoPageResponse.PSObject.Properties['html_url']) {
+                $pageResults = @($repoPageResponse)
+              }
+              else {
+                throw "GitHub API returned an unexpected non-list response while enumerating repositories on page ${page}."
+              }
+            }
+
+            foreach ($repo in $pageResults) {
+              $repositories.Add($repo)
+            }
+            Write-Host "  Page ${page}: $($pageResults.Count) repositories (running total: $($repositories.Count))"
+            $page += 1
+          } while ($pageResults.Count -gt 0)
+          Write-Host '::endgroup::'
+
+          $templateRepositories = @($repositories | Where-Object { $_.is_template })
+          $nonTemplateRepositories = @($repositories | Where-Object { -not $_.is_template })
+          $forkRepositories = @($nonTemplateRepositories | Where-Object { $_.fork })
+          $filteredRepositories = @($nonTemplateRepositories | Where-Object { -not $_.fork })
+          Write-Host "Enumerated $($repositories.Count) repositories: $($filteredRepositories.Count) to process, $($templateRepositories.Count) templates excluded, $($forkRepositories.Count) forks excluded"
+
+          $includedRepositories = New-Object System.Collections.Generic.List[object]
+          $excludedApplied = New-Object System.Collections.Generic.List[object]
+
+          foreach ($repo in $filteredRepositories) {
+            $repoName = [string]$repo.name
+            $repoKey = $repoName.Trim().ToLowerInvariant()
+            if ($excludedByName.ContainsKey($repoKey)) {
+              $excludedApplied.Add([pscustomobject]@{
+                name = $repoName
+                reason = [string]$excludedByName[$repoKey]
+              })
+              continue
+            }
+
+            $includedRepositories.Add($repo)
+          }
+
+          $catalogItems = New-Object System.Collections.Generic.List[object]
+          $shepherdWarnings = New-Object System.Collections.Generic.List[string]
+          $timestamp = [DateTimeOffset]::UtcNow.ToString("yyyy-MM-dd HH:mm 'UTC'", [System.Globalization.CultureInfo]::InvariantCulture)
+          $outDir = Join-Path -Path $PWD -ChildPath 'out/catalog'
+          New-Item -ItemType Directory -Path $outDir -Force | Out-Null
+
+          $repoTotal = $includedRepositories.Count
+          Write-Host "::group::Building catalog entries for $repoTotal repositories"
+          $repoIndex = 0
+          foreach ($repo in $includedRepositories) {
+            $repoIndex++
+            $repoName = [string]$repo.name
+            Write-Host "  [$repoIndex/$repoTotal] $repoName"
+            $releaseTag = $null
+            $releaseDate = $null
+            $releaseUrl = $null
+            $releaseStage = $null
+
+            $latestReleaseUri = "https://api.github.com/repos/$org/$repoName/releases/latest"
+            $latestRelease = Invoke-GitHubApi -Uri $latestReleaseUri -SuppressNotFound
+            if ($null -ne $latestRelease) {
+              $releaseTag = [string]$latestRelease.tag_name
+              $releaseDate = [string]$latestRelease.published_at
+              $releaseUrl = [string]$latestRelease.html_url
+              $releaseStage = Get-ReleaseStageFromTag -Tag $releaseTag
+            }
+
+            $pipelineConfigUri = "https://api.github.com/repos/$org/$repoName/contents/pipeline-config/ref/pipeline.yaml"
+            $pipelineConfig = Invoke-GitHubApi -Uri $pipelineConfigUri -SuppressNotFound
+            $hasPipelineConfig = $null -ne $pipelineConfig
+
+            $shepherds = @(Get-Shepherds -Owner $org -RepositoryName $repoName)
+            $hasShepherdPolicyWarning = $shepherds.Count -lt 2
+            if ($hasShepherdPolicyWarning) {
+              $shepherdWarnings.Add("Repository '$repoName' has fewer than two shepherds defined in .github/catalog.yaml.")
+            }
+
+            $releaseNotesCatalogRelativePath = $null
+            if ($null -ne $latestRelease) {
+              $repoArtifactDir = Join-Path -Path $outDir -ChildPath $repoName
+              New-Item -ItemType Directory -Path $repoArtifactDir -Force | Out-Null
+
+              $releaseNotesPath = Join-Path -Path $repoArtifactDir -ChildPath 'RELEASE-NOTES.md'
+              $releaseBody = [string]$latestRelease.body
+              if ([string]::IsNullOrWhiteSpace($releaseBody)) {
+                $releaseBody = '_No release notes body provided in the latest GitHub release._'
+              }
+
+              $releaseLines = New-Object System.Collections.Generic.List[string]
+              $releaseLines.Add('# Release Notes')
+              $releaseLines.Add('')
+              $releaseLines.Add("Repository: $repoName")
+              $releaseLines.Add("Tag: $releaseTag")
+              $releaseLines.Add("Published: $releaseDate")
+              $releaseLines.Add("Source: $releaseUrl")
+              $releaseLines.Add('')
+              $releaseLines.Add($releaseBody)
+              $releaseLines | Out-File -FilePath $releaseNotesPath -Encoding utf8
+              $releaseNotesCatalogRelativePath = "$repoName/RELEASE-NOTES.md"
+            }
+
+            $readmeCatalogRelativePath = $null
+            $readmeContent = Get-RepositoryReadmeMarkdown -Owner $org -RepositoryName $repoName
+            if (-not [string]::IsNullOrWhiteSpace($readmeContent)) {
+              $repoArtifactDir = Join-Path -Path $outDir -ChildPath $repoName
+              New-Item -ItemType Directory -Path $repoArtifactDir -Force | Out-Null
+              $readmePath = Join-Path -Path $repoArtifactDir -ChildPath 'README.md'
+              $readmeContent | Out-File -FilePath $readmePath -Encoding utf8
+              $readmeCatalogRelativePath = "$repoName/README.md"
+            }
+
+            $catalogItems.Add([pscustomobject]@{
+              repositoryName = $repoName
+              description = [string]$repo.description
+              url = [string]$repo.html_url
+              visibility = [string]$repo.visibility
+              isArchived = [bool]$repo.archived
+              isFork = [bool]$repo.fork
+              isTemplate = [bool]$repo.is_template
+              primaryLanguage = [string]$repo.language
+              topics = @($repo.topics)
+              openIssuesCount = [int]$repo.open_issues_count
+              defaultBranch = [string]$repo.default_branch
+              latestReleaseTag = $releaseTag
+              latestReleaseDate = $releaseDate
+              latestReleaseUrl = $releaseUrl
+              releaseNotesCatalogRelativePath = $releaseNotesCatalogRelativePath
+              releaseStage = $releaseStage
+              hasPipelineConfig = [bool]$hasPipelineConfig
+              shepherds = $shepherds
+              shepherdPolicyWarning = [bool]$hasShepherdPolicyWarning
+              readmeCatalogRelativePath = $readmeCatalogRelativePath
+              lastPushedAt = [string]$repo.pushed_at
+              lastUpdatedAt = [string]$repo.updated_at
+            })
+          }
+
+          Write-Host '::endgroup::'
+          $catalogItems = @($catalogItems | Sort-Object -Property repositoryName)
+
+          $catalogJsonPath = Join-Path -Path $outDir -ChildPath 'catalog.json'
+          $catalogMdPath = Join-Path -Path $outDir -ChildPath 'catalog.md'
+          $warningsPath = Join-Path -Path $outDir -ChildPath 'catalog-warnings.md'
+          $metadataPath = Join-Path -Path $outDir -ChildPath 'catalog-metadata.json'
+
+          $catalogItems | ConvertTo-Json -Depth 12 | Out-File -FilePath $catalogJsonPath -Encoding utf8
+
+          $mdLines = New-Object System.Collections.Generic.List[string]
+          $activeCatalogItems = @($catalogItems | Where-Object { -not [bool]$_.isArchived })
+          $archivedCatalogItems = @($catalogItems | Where-Object { [bool]$_.isArchived })
+          $mdLines.Add('# Community Solutions Catalog')
+          $mdLines.Add('')
+          $mdLines.Add("Generated (UTC): $timestamp")
+          $mdLines.Add('')
+          $mdLines.Add('| Repository | Description | Latest Release | Release Notes | Language | Shepherds | README |')
+          $mdLines.Add('|---|---|---|---|---|---|---|')
+
+          foreach ($item in $activeCatalogItems) {
+            $repoLink = "[$($item.repositoryName)]($($item.url))"
+            $description = if ([string]::IsNullOrWhiteSpace([string]$item.description)) {
+              'n/a'
+            }
+            else {
+              ([string]$item.description).Replace('|', '\|').Replace("`r", ' ').Replace("`n", ' ')
+            }
+            $latestTag = if ([string]::IsNullOrWhiteSpace([string]$item.latestReleaseTag)) { 'none' } else { [string]$item.latestReleaseTag }
+            $releaseNotesLink = if ([string]::IsNullOrWhiteSpace([string]$item.releaseNotesCatalogRelativePath)) { 'n/a' } else { "[Notes](./$(Get-UrlEncodedRelativePath -RelativePath ([string]$item.releaseNotesCatalogRelativePath))?web=1)" }
+            $language = if ([string]::IsNullOrWhiteSpace([string]$item.primaryLanguage)) { 'n/a' } else { [string]$item.primaryLanguage }
+            $shepherdList = if ($item.shepherds.Count -gt 0) { ($item.shepherds -join ', ') } else { 'missing' }
+            $readmeLink = if ([string]::IsNullOrWhiteSpace([string]$item.readmeCatalogRelativePath)) { 'n/a' } else { "[README](./$(Get-UrlEncodedRelativePath -RelativePath ([string]$item.readmeCatalogRelativePath))?web=1)" }
+            $mdLines.Add("| $repoLink | $description | $latestTag | $releaseNotesLink | $language | $shepherdList | $readmeLink |")
+          }
+
+          $mdLines.Add('')
+          $mdLines.Add('## Archived Repositories')
+          $mdLines.Add('')
+          if ($archivedCatalogItems.Count -eq 0) {
+            $mdLines.Add('_No archived repositories at time of generation._')
+          }
+          else {
+            $mdLines.Add('| Repository | Description | Latest Release | Release Notes | Language | Shepherds | README |')
+            $mdLines.Add('|---|---|---|---|---|---|---|')
+            foreach ($item in $archivedCatalogItems) {
+              $repoLink = "[$($item.repositoryName)]($($item.url))"
+              $description = if ([string]::IsNullOrWhiteSpace([string]$item.description)) {
+                'n/a'
+              }
+              else {
+                ([string]$item.description).Replace('|', '\|').Replace("`r", ' ').Replace("`n", ' ')
+              }
+              $latestTag = if ([string]::IsNullOrWhiteSpace([string]$item.latestReleaseTag)) { 'none' } else { [string]$item.latestReleaseTag }
+              $releaseNotesLink = if ([string]::IsNullOrWhiteSpace([string]$item.releaseNotesCatalogRelativePath)) { 'n/a' } else { "[Notes](./$(Get-UrlEncodedRelativePath -RelativePath ([string]$item.releaseNotesCatalogRelativePath))?web=1)" }
+              $language = if ([string]::IsNullOrWhiteSpace([string]$item.primaryLanguage)) { 'n/a' } else { [string]$item.primaryLanguage }
+              $shepherdList = if ($item.shepherds.Count -gt 0) { ($item.shepherds -join ', ') } else { 'missing' }
+              $readmeLink = if ([string]::IsNullOrWhiteSpace([string]$item.readmeCatalogRelativePath)) { 'n/a' } else { "[README](./$(Get-UrlEncodedRelativePath -RelativePath ([string]$item.readmeCatalogRelativePath))?web=1)" }
+              $mdLines.Add("| $repoLink | $description | $latestTag | $releaseNotesLink | $language | $shepherdList | $readmeLink |")
+            }
+          }
+
+          $mdLines | Out-File -FilePath $catalogMdPath -Encoding utf8
+
+          $warningLines = New-Object System.Collections.Generic.List[string]
+          $warningLines.Add('# Catalog Warnings')
+          $warningLines.Add('')
+          $warningLines.Add("Generated (UTC): $timestamp")
+          $warningLines.Add('')
+          if ($shepherdWarnings.Count -gt 0) {
+            foreach ($warning in $shepherdWarnings) {
+              $warningLines.Add("- $warning")
+            }
+          }
+          else {
+            $warningLines.Add('- No warnings.')
+          }
+          $warningLines | Out-File -FilePath $warningsPath -Encoding utf8
+
+          $exclusionsAppliedEntries = @($excludedApplied | ForEach-Object {
+            [pscustomobject]@{
+              name = [string]$_.name
+              reason = [string]$_.reason
+            }
+          })
+
+          $metadata = [pscustomobject]@{
+            generatedAtUtc = $timestamp
+            generatedByWorkflow = [string]$env:GITHUB_WORKFLOW
+            workflowRunId = [string]$env:GITHUB_RUN_ID
+            workflowRunNumber = [string]$env:GITHUB_RUN_NUMBER
+            workflowRunAttempt = [string]$env:GITHUB_RUN_ATTEMPT
+            workflowRunUrl = "https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+            organization = $org
+            totalRepositoriesEnumerated = [int]$repositories.Count
+            repositoriesAfterTemplateAndForkFilter = [int]$filteredRepositories.Count
+            repositoriesPublished = [int]$catalogItems.Count
+            templateRepositoriesExcluded = [int]$templateRepositories.Count
+            forkRepositoriesExcluded = [int]$forkRepositories.Count
+            exclusionsConfigured = $excludedList
+            exclusionsApplied = $exclusionsAppliedEntries
+            repoFilter = [pscustomobject]@{
+              includeArchived = $true
+              includeForks = $false
+              includeTemplates = $false
+            }
+            shepherdPolicyWarnings = @($shepherdWarnings)
+            suppressInlineWarnings = [bool]$suppressInlineWarnings
+          }
+
+          $metadata | ConvertTo-Json -Depth 12 | Out-File -FilePath $metadataPath -Encoding utf8
+
+          "## SharePoint catalog build" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "- Organization: $org" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "- Repositories enumerated: $($repositories.Count)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "- Template repositories excluded (flag-based): $($templateRepositories.Count)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "- Fork repositories excluded: $($forkRepositories.Count)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "- Repositories published: $($catalogItems.Count)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "- Exclusions applied: $($excludedApplied.Count)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "- Shepherd warnings: $($shepherdWarnings.Count)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+
+      - name: Upload catalog artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: sharepoint-catalog-files
+          path: out/catalog/*
+          if-no-files-found: error
+
+  publish-catalog:
+    needs: build-catalog
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: sandbox
+            secretEnvVar: SHAREPOINT_RELEASE_CREDENTIALS_SAND
+          - label: production
+            secretEnvVar: SHAREPOINT_RELEASE_CREDENTIALS_PROD
+
+    steps:
+      - name: Evaluate matrix target gate
+        id: gate
+        shell: pwsh
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          TARGET_INPUT: ${{ inputs.target }}
+          MATRIX_LABEL: ${{ matrix.label }}
+        run: |
+          $shouldRun = $false
+          if ($env:EVENT_NAME -eq 'schedule') {
+            $shouldRun = $true
+          }
+          elseif ($env:EVENT_NAME -eq 'workflow_dispatch') {
+            if ($env:TARGET_INPUT -eq $env:MATRIX_LABEL -or $env:TARGET_INPUT -eq 'both') {
+              $shouldRun = $true
+            }
+          }
+
+          "should_run=$($shouldRun.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Matrix target '$env:MATRIX_LABEL' gate result: $shouldRun"
+
+      - name: Checkout code
+        if: steps.gate.outputs.should_run == 'true'
+        uses: actions/checkout@v5
+
+      - name: Download catalog artifact
+        if: steps.gate.outputs.should_run == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: sharepoint-catalog-files
+          path: out/catalog
+
+      - name: Trust PSGallery for module installs
+        if: steps.gate.outputs.should_run == 'true'
+        shell: pwsh
+        run: Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+
+      - name: Publish catalog files to SharePoint target
+        if: steps.gate.outputs.should_run == 'true'
+        shell: pwsh
+        env:
+          TARGET_LABEL: ${{ matrix.label }}
+          TARGET_SECRET_ENVVAR: ${{ matrix.secretEnvVar }}
+          SHAREPOINT_RELEASE_CREDENTIALS_SAND: ${{ secrets.SHAREPOINT_RELEASE_CREDENTIALS_SAND }}
+          SHAREPOINT_RELEASE_CREDENTIALS_PROD: ${{ secrets.SHAREPOINT_RELEASE_CREDENTIALS_PROD }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+
+          if (-not (Test-Path $env:PUBLISH_TARGETS_FILE)) {
+            throw "Publish targets file '$env:PUBLISH_TARGETS_FILE' not found."
+          }
+
+          Write-Host '::group::Installing required PowerShell modules'
+          if (-not (Get-Command ConvertFrom-Yaml -ErrorAction SilentlyContinue)) {
+            if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
+              Register-PSRepository -Default -ErrorAction Stop
+            }
+            Write-Host 'Installing powershell-yaml...'
+            Install-Module -Name powershell-yaml -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+            Import-Module powershell-yaml -ErrorAction Stop
+            Write-Host 'powershell-yaml installed.'
+          } else {
+            Write-Host 'powershell-yaml already available.'
+          }
+
+          if (-not (Get-Module -ListAvailable -Name PnP.PowerShell)) {
+            Write-Host 'Installing PnP.PowerShell...'
+            Install-Module -Name PnP.PowerShell -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+            Write-Host 'PnP.PowerShell installed.'
+          } else {
+            Write-Host 'PnP.PowerShell already available.'
+          }
+          Import-Module PnP.PowerShell -ErrorAction Stop
+          if (-not (Get-Command -Name Resolve-PnPFolder -ErrorAction SilentlyContinue)) {
+            throw 'PnP.PowerShell does not expose Resolve-PnPFolder in this environment.'
+          }
+          foreach ($requiredCommand in @('Add-PnPPage', 'Get-PnPPage', 'Add-PnPPageSection', 'Add-PnPPageTextPart', 'Set-PnPPage')) {
+            if (-not (Get-Command -Name $requiredCommand -ErrorAction SilentlyContinue)) {
+              throw "PnP.PowerShell command '$requiredCommand' is not available in this environment."
+            }
+          }
+          Write-Host '::endgroup::'
+
+          function Get-SharePointCredentials {
+            param([string]$SecretValue)
+            if ([string]::IsNullOrWhiteSpace($SecretValue)) { return $null }
+            try { return ($SecretValue | ConvertFrom-Json -ErrorAction Stop) }
+            catch {
+              throw "SharePoint credential secret must be JSON. Expected fields: authType (optional), and either certificate fields (clientId, tenantId plus certificatePath/certificatePassword or certificateBase64/certificatePassword) or accessToken."
+            }
+          }
+
+          function Connect-SharePointTarget {
+            param(
+              [Parameter(Mandatory = $true)][string]$SiteUrl,
+              [Parameter(Mandatory = $true)][psobject]$CredentialObject
+            )
+
+              function Get-CredentialPropertyValue {
+                param(
+                  [Parameter(Mandatory = $true)][psobject]$InputObject,
+                  [Parameter(Mandatory = $true)][string]$PropertyName
+                )
+
+                $property = $InputObject.PSObject.Properties[$PropertyName]
+                if ($null -eq $property) {
+                  return ''
+                }
+
+                return [string]$property.Value
+              }
+
+              $authType = Get-CredentialPropertyValue -InputObject $CredentialObject -PropertyName 'authType'
+            if ([string]::IsNullOrWhiteSpace($authType)) {
+              $authType = 'certificate'
+            }
+
+            switch ($authType.Trim().ToLowerInvariant()) {
+              'accesstoken' {
+                  $accessToken = Get-CredentialPropertyValue -InputObject $CredentialObject -PropertyName 'accessToken'
+                if ([string]::IsNullOrWhiteSpace($accessToken)) {
+                  throw "SharePoint credentials authType 'accessToken' requires 'accessToken'."
+                }
+                Connect-PnPOnline -Url $SiteUrl -AccessToken $accessToken -ErrorAction Stop
+                break
+              }
+              'graphaccesstoken' {
+                  $accessToken = Get-CredentialPropertyValue -InputObject $CredentialObject -PropertyName 'accessToken'
+                if ([string]::IsNullOrWhiteSpace($accessToken)) {
+                  throw "SharePoint credentials authType 'graphAccessToken' requires 'accessToken'."
+                }
+                Connect-PnPOnline -Url $SiteUrl -AccessToken $accessToken -ErrorAction Stop
+                break
+              }
+              'certificate' {
+                  $clientId = Get-CredentialPropertyValue -InputObject $CredentialObject -PropertyName 'clientId'
+                  $tenantId = Get-CredentialPropertyValue -InputObject $CredentialObject -PropertyName 'tenantId'
+                  $certificatePath = Get-CredentialPropertyValue -InputObject $CredentialObject -PropertyName 'certificatePath'
+                  $certificatePassword = Get-CredentialPropertyValue -InputObject $CredentialObject -PropertyName 'certificatePassword'
+                  $certificateBase64 = Get-CredentialPropertyValue -InputObject $CredentialObject -PropertyName 'certificateBase64'
+
+                if ([string]::IsNullOrWhiteSpace($clientId) -or [string]::IsNullOrWhiteSpace($tenantId)) {
+                  throw "SharePoint credentials authType 'certificate' requires clientId and tenantId."
+                }
+
+                if (-not [string]::IsNullOrWhiteSpace($certificatePath)) {
+                  if ([string]::IsNullOrWhiteSpace($certificatePassword)) {
+                    throw "SharePoint credentials authType 'certificate' using certificatePath requires certificatePassword."
+                  }
+
+                  $securePassword = ConvertTo-SecureString -String $certificatePassword -AsPlainText -Force
+                  Connect-PnPOnline -Url $SiteUrl -ClientId $clientId -Tenant $tenantId -CertificatePath $certificatePath -CertificatePassword $securePassword -ErrorAction Stop
+                  break
+                }
+
+                if (-not [string]::IsNullOrWhiteSpace($certificateBase64)) {
+                  if ([string]::IsNullOrWhiteSpace($certificatePassword)) {
+                    throw "SharePoint credentials authType 'certificate' using certificateBase64 requires certificatePassword."
+                  }
+
+                  $securePassword = ConvertTo-SecureString -String $certificatePassword -AsPlainText -Force
+                  Connect-PnPOnline -Url $SiteUrl -ClientId $clientId -Tenant $tenantId -CertificateBase64Encoded $certificateBase64 -CertificatePassword $securePassword -ErrorAction Stop
+                  break
+                }
+
+                throw "SharePoint credentials authType 'certificate' requires either certificatePath or certificateBase64."
+              }
+              default {
+                throw "Unsupported SharePoint authType '$authType'. Supported values: certificate, accessToken, graphAccessToken."
+              }
+            }
+          }
+
+          Write-Host '::group::Resolving SharePoint target and credentials'
+          $publishConfig = Get-Content -Path $env:PUBLISH_TARGETS_FILE -Raw | ConvertFrom-Yaml -ErrorAction Stop
+
+          $sharePointTargets = @($publishConfig.sharePointTargets)
+          if ($sharePointTargets.Count -eq 0) {
+            throw 'No sharePointTargets configured in publish-targets.yaml.'
+          }
+
+          $target = $sharePointTargets | Where-Object {
+            [string]$_.secretEnvVar -eq $env:TARGET_SECRET_ENVVAR
+          } | Select-Object -First 1
+
+          if ($null -eq $target) {
+            throw "No SharePoint target configured for secretEnvVar '$env:TARGET_SECRET_ENVVAR'."
+          }
+
+          $targetName = [string]$target.name
+          $siteUrl = [string]$target.siteUrl
+          $documentLibrary = [string]$target.documentLibrary
+          if ([string]::IsNullOrWhiteSpace($siteUrl) -or [string]::IsNullOrWhiteSpace($documentLibrary)) {
+            throw "SharePoint target '$targetName' is missing required fields siteUrl and/or documentLibrary."
+          }
+
+          $credentialSecretValue = [System.Environment]::GetEnvironmentVariable($env:TARGET_SECRET_ENVVAR)
+          if ([string]::IsNullOrWhiteSpace($credentialSecretValue)) {
+            throw "Secret '$env:TARGET_SECRET_ENVVAR' is not set."
+          }
+
+          $credentials = Get-SharePointCredentials -SecretValue $credentialSecretValue
+          if ($null -eq $credentials) {
+            throw "Secret '$env:TARGET_SECRET_ENVVAR' could not be parsed into a credential payload."
+          }
+          Write-Host "Target resolved: '$targetName' ($siteUrl)"
+          Write-Host '::endgroup::'
+
+          $catalogFiles = @(
+            'catalog.json',
+            'catalog.md',
+            'catalog-warnings.md',
+            'catalog-metadata.json'
+          )
+
+          $artifactPath = Join-Path -Path $PWD -ChildPath 'out/catalog'
+          Write-Host '::group::Validating catalog artifacts'
+          foreach ($fileName in $catalogFiles) {
+            $fullPath = Join-Path -Path $artifactPath -ChildPath $fileName
+            if (-not (Test-Path $fullPath)) {
+              throw "Catalog artifact '$fileName' not found in '$artifactPath'."
+            }
+            Write-Host "  Found: $fileName"
+          }
+          Write-Host '::endgroup::'
+
+          function ConvertTo-HtmlEncoded {
+            param([string]$Value)
+            if ($null -eq $Value) { return '' }
+            return [System.Net.WebUtility]::HtmlEncode([string]$Value)
+          }
+
+          function Get-UrlEncodedRelativePath {
+            param([string]$RelativePath)
+            if ([string]::IsNullOrWhiteSpace($RelativePath)) { return '' }
+            return (([string]$RelativePath -split '/') | ForEach-Object { [System.Uri]::EscapeDataString($_) }) -join '/'
+          }
+
+          Write-Host '::group::Building SharePoint page body'
+          $catalogData = @(Get-Content -Path (Join-Path -Path $artifactPath -ChildPath 'catalog.json') -Raw | ConvertFrom-Json)
+          $catalogMetadata = Get-Content -Path (Join-Path -Path $artifactPath -ChildPath 'catalog-metadata.json') -Raw | ConvertFrom-Json
+          Write-Host "  Catalog entries: $($catalogData.Count)"
+
+          $generatedAt = [string]$catalogMetadata.generatedAtUtc
+          if ([string]::IsNullOrWhiteSpace($generatedAt)) {
+            $generatedAt = [DateTimeOffset]::UtcNow.ToString("yyyy-MM-dd HH:mm 'UTC'", [System.Globalization.CultureInfo]::InvariantCulture)
+          }
+
+          $warnings = @()
+          if ($null -ne $catalogMetadata.shepherdPolicyWarnings) {
+            $warnings = @($catalogMetadata.shepherdPolicyWarnings | ForEach-Object { [string]$_ })
+          }
+
+          $catalogFileBaseUrl = "$siteUrl/$(Get-UrlEncodedRelativePath -RelativePath ($documentLibrary.Trim('/')))/Catalog"
+
+          $activeTableRows = New-Object System.Text.StringBuilder
+          $archivedTableRows = New-Object System.Text.StringBuilder
+          foreach ($item in $catalogData) {
+            $repoName = ConvertTo-HtmlEncoded -Value ([string]$item.repositoryName)
+            $repoUrl = [string]$item.url
+            $repoUrlEscaped = ConvertTo-HtmlEncoded -Value $repoUrl
+            $description = if ([string]::IsNullOrWhiteSpace([string]$item.description)) { 'n/a' } else { ConvertTo-HtmlEncoded -Value ([string]$item.description) }
+            $latestTag = if ([string]::IsNullOrWhiteSpace([string]$item.latestReleaseTag)) { 'none' } else { ConvertTo-HtmlEncoded -Value ([string]$item.latestReleaseTag) }
+            $releaseNotesCatalogRelativePath = [string]$item.releaseNotesCatalogRelativePath
+            $language = if ([string]::IsNullOrWhiteSpace([string]$item.primaryLanguage)) { 'n/a' } else { ConvertTo-HtmlEncoded -Value ([string]$item.primaryLanguage) }
+            $shepherds = if ($null -ne $item.shepherds -and @($item.shepherds).Count -gt 0) {
+              ConvertTo-HtmlEncoded -Value ((@($item.shepherds | ForEach-Object { [string]$_ }) -join ', '))
+            }
+            else {
+              'missing'
+            }
+
+            $releaseNotesLink = if ([string]::IsNullOrWhiteSpace($releaseNotesCatalogRelativePath)) {
+              'n/a'
+            }
+            else {
+              $releaseNotesRelativePath = Get-UrlEncodedRelativePath -RelativePath $releaseNotesCatalogRelativePath
+              "<a href='$catalogFileBaseUrl/$($releaseNotesRelativePath)?web=1'>Notes</a>"
+            }
+
+            $readmeLink = if ([string]::IsNullOrWhiteSpace([string]$item.readmeCatalogRelativePath)) {
+              'n/a'
+            }
+            else {
+              $readmeRelativePath = Get-UrlEncodedRelativePath -RelativePath ([string]$item.readmeCatalogRelativePath)
+              "<a href='$catalogFileBaseUrl/$($readmeRelativePath)?web=1'>README</a>"
+            }
+
+            $rowHtml = "<tr><td><a href='$repoUrlEscaped'>$repoName</a></td><td>$description</td><td>$latestTag</td><td>$releaseNotesLink</td><td>$language</td><td>$shepherds</td><td>$readmeLink</td></tr>"
+            if ([bool]$item.isArchived) {
+              $null = $archivedTableRows.AppendLine($rowHtml)
+            }
+            else {
+              $null = $activeTableRows.AppendLine($rowHtml)
+            }
+          }
+
+          $activeCount = @($catalogData | Where-Object { -not [bool]$_.isArchived }).Count
+          $archivedCount = @($catalogData | Where-Object { [bool]$_.isArchived }).Count
+          $archivedSectionHtml = if ($archivedCount -gt 0) {
+          @"
+            <h2>Archived Repositories</h2>
+            <table style='border-collapse:collapse;width:100%;'>
+              <thead>
+                <tr>
+                  <th style='text-align:left;border:1px solid #d0d7de;padding:6px;'>Repository</th>
+                  <th style='text-align:left;border:1px solid #d0d7de;padding:6px;'>Description</th>
+                  <th style='text-align:left;border:1px solid #d0d7de;padding:6px;'>Latest Release</th>
+                  <th style='text-align:left;border:1px solid #d0d7de;padding:6px;'>Release Notes</th>
+                  <th style='text-align:left;border:1px solid #d0d7de;padding:6px;'>Language</th>
+                  <th style='text-align:left;border:1px solid #d0d7de;padding:6px;'>Shepherds</th>
+                  <th style='text-align:left;border:1px solid #d0d7de;padding:6px;'>README</th>
+                </tr>
+              </thead>
+              <tbody>
+                $($archivedTableRows.ToString())
+              </tbody>
+            </table>
+          "@
+          }
+          else {
+            "<h2>Archived Repositories</h2>`n            <p><em>No archived repositories at time of generation.</em></p>"
+          }
+
+          Write-Host "  Table rows built: active=$activeCount, archived=$archivedCount, warnings=$($warnings.Count)"
+          Write-Host '::endgroup::'
+
+          $suppressInlineWarnings = [bool]$catalogMetadata.suppressInlineWarnings
+
+          $warningsSection = ''
+          if (-not $suppressInlineWarnings -and $warnings.Count -gt 0) {
+            $warningItems = New-Object System.Text.StringBuilder
+            foreach ($warning in $warnings) {
+              $null = $warningItems.AppendLine("<li>$(ConvertTo-HtmlEncoded -Value $warning)</li>")
+            }
+            $warningsSection = "<h2>Warnings</h2>`n            <ul>`n              $($warningItems.ToString())`n            </ul>"
+          }
+          $pageBody = @"
+          <div>
+            <h1>Community Solutions Catalog</h1>
+            <p><strong>Generated (UTC):</strong> $generatedAt</p>
+            <h2>Summary</h2>
+            <ul>
+              <li>Total repositories enumerated: $($catalogMetadata.totalRepositoriesEnumerated)</li>
+              <li>After template/fork filter: $($catalogMetadata.repositoriesAfterTemplateAndForkFilter)</li>
+              <li>Published repositories: $($catalogMetadata.repositoriesPublished)</li>
+              <li>Template repositories excluded: $($catalogMetadata.templateRepositoriesExcluded)</li>
+              <li>Fork repositories excluded: $($catalogMetadata.forkRepositoriesExcluded)</li>
+              <li>Exclusions applied: $(@($catalogMetadata.exclusionsApplied).Count)</li>
+              <li>Warning count: $($warnings.Count) (see <a href='$catalogFileBaseUrl/catalog-warnings.md'>catalog-warnings.md</a>)</li>
+            </ul>
+            $warningsSection
+            <div style='height:12px;'></div>
+            <hr style='border:0;border-top:1px solid #d0d7de;margin:0 0 14px 0;' />
+            <table style='border-collapse:collapse;width:100%;'>
+              <thead>
+                <tr>
+                  <th style='text-align:left;border:1px solid #d0d7de;padding:6px;'>Repository</th>
+                  <th style='text-align:left;border:1px solid #d0d7de;padding:6px;'>Description</th>
+                  <th style='text-align:left;border:1px solid #d0d7de;padding:6px;'>Latest Release</th>
+                  <th style='text-align:left;border:1px solid #d0d7de;padding:6px;'>Release Notes</th>
+                  <th style='text-align:left;border:1px solid #d0d7de;padding:6px;'>Language</th>
+                  <th style='text-align:left;border:1px solid #d0d7de;padding:6px;'>Shepherds</th>
+                  <th style='text-align:left;border:1px solid #d0d7de;padding:6px;'>README</th>
+                </tr>
+              </thead>
+              <tbody>
+                $($activeTableRows.ToString())
+              </tbody>
+            </table>
+            $archivedSectionHtml
+            <h2>Raw Artifacts</h2>
+            <ul>
+              <li><a href='$catalogFileBaseUrl/catalog.json'>catalog.json</a></li>
+              <li><a href='$catalogFileBaseUrl/catalog.md'>catalog.md</a></li>
+              <li><a href='$catalogFileBaseUrl/catalog-warnings.md'>catalog-warnings.md</a></li>
+              <li><a href='$catalogFileBaseUrl/catalog-metadata.json'>catalog-metadata.json</a></li>
+            </ul>
+          </div>
+          "@
+
+          Write-Host "::group::Publishing to SharePoint target '$targetName'"
+          Write-Host "Connecting to $siteUrl..."
+          Connect-SharePointTarget -SiteUrl $siteUrl -CredentialObject $credentials
+          Write-Host 'Connected.'
+          try {
+            $destination = ($documentLibrary.Trim('/') + '/Catalog')
+            Write-Host "Ensuring folder '$destination' exists..."
+            Resolve-PnPFolder -SiteRelativePath $destination | Out-Null
+
+            foreach ($fileName in $catalogFiles) {
+              $fullPath = Join-Path -Path $artifactPath -ChildPath $fileName
+              Write-Host "  Uploading $fileName..."
+              Add-PnPFile -Path $fullPath -Folder $destination -ErrorAction Stop | Out-Null
+              Write-Host "  Uploaded '$fileName' to '$destination'."
+            }
+
+            $repoArtifactFiles = @(Get-ChildItem -Path $artifactPath -File -Recurse | Where-Object { $_.DirectoryName -ne $artifactPath -and ($_.Name -eq 'README.md' -or $_.Name -eq 'RELEASE-NOTES.md') })
+            foreach ($repoArtifactFile in $repoArtifactFiles) {
+              $relativeDirectory = [System.IO.Path]::GetRelativePath($artifactPath, $repoArtifactFile.DirectoryName).Replace('\\', '/')
+              $targetFolder = "$destination/$relativeDirectory"
+              Write-Host "  Ensuring folder '$targetFolder' exists..."
+              Resolve-PnPFolder -SiteRelativePath $targetFolder | Out-Null
+              Write-Host "  Uploading $relativeDirectory/$($repoArtifactFile.Name)..."
+              Add-PnPFile -Path $repoArtifactFile.FullName -Folder $targetFolder -ErrorAction Stop | Out-Null
+              Write-Host "  Uploaded '$($repoArtifactFile.Name)' to '$targetFolder'."
+            }
+
+            $pageName = 'catalog.aspx'
+            $pageBaseName = 'catalog'
+            Write-Host "Checking for existing page '$pageName'..."
+            $existingPage = Get-PnPPage -Identity $pageName -ErrorAction SilentlyContinue
+            if ($null -eq $existingPage) {
+              Write-Host '  Creating page...'
+              Add-PnPPage -Name $pageBaseName -LayoutType Article -ErrorAction Stop | Out-Null
+              $createdPage = Get-PnPPage -Identity $pageName -ErrorAction Stop
+              Write-Host "  Page created: $($createdPage.Name)"
+            }
+            else {
+              Write-Host "  Resetting existing page '$pageName' canvas..."
+              $pageForReset = Get-PnPPage -Identity $pageName -ErrorAction Stop
+
+              if ($null -eq $pageForReset.PSObject.Methods['Save']) {
+                throw "Overwrite guarantee failed: page object does not expose Save(). Cannot reset '$pageName' safely."
+              }
+
+              $sections = @($pageForReset.Sections)
+              Write-Host "  Existing section count: $($sections.Count)"
+              if ($sections.Count -gt 0) {
+                $pageForReset.Sections.Clear()
+              }
+
+              $pageForReset.Save()
+
+              $postResetPage = Get-PnPPage -Identity $pageName -ErrorAction Stop
+              $remainingSectionCount = @($postResetPage.Sections).Count
+              Write-Host "  Section count after reset: $remainingSectionCount"
+              if ($remainingSectionCount -gt 0) {
+                throw "Overwrite guarantee failed: page '$pageName' still has $remainingSectionCount section(s) after reset. Aborting to avoid appending duplicate content."
+              }
+
+              Write-Host "  Existing page '$pageName' reset complete."
+            }
+
+            Write-Host '  Adding page section...'
+            Add-PnPPageSection -Page $pageName -SectionTemplate OneColumn -Order 1 -ErrorAction Stop | Out-Null
+            Write-Host '  Adding page content...'
+            Add-PnPPageTextPart -Page $pageName -Section 1 -Column 1 -Text $pageBody -ErrorAction Stop | Out-Null
+            Write-Host '  Publishing page...'
+            Set-PnPPage -Identity $pageName -Publish -ErrorAction Stop | Out-Null
+            Write-Host "Published SharePoint page '$pageName' on '$targetName'."
+          }
+          finally {
+            Disconnect-PnPOnline -ErrorAction SilentlyContinue
+          }
+          Write-Host '::endgroup::'
+
+          $catalogPageUrl = "$siteUrl/SitePages/catalog.aspx"
+
+          "## SharePoint catalog publish ($env:TARGET_LABEL)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "- Target: $targetName" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "- Site: $siteUrl" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "- Destination: $documentLibrary/Catalog" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "- Page: $catalogPageUrl" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "- Files: catalog.json, catalog.md, catalog-warnings.md, catalog-metadata.json" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append

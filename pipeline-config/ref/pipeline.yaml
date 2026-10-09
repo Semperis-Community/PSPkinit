@@ -12,7 +12,7 @@ workflowContractVersion: 1.0.0
 # Optional multi-package output can be configured in pipeline-config/ref/release-packages.yaml.
 # When multi-package config is present and releasePackages is non-empty, one archive per
 # configured package is generated in addition to default output when singlePackage.enabled=true.
-releasePackageName: pipeline-build
+releasePackageName: PSPkinit
 
 # Explicit release versioning policy used when a PR merge to main creates the next tag.
 # method: Choose versioning strategy - 'semver' (default) or 'calver'

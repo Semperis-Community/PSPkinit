@@ -9,10 +9,14 @@
 # different assemblies depending on runtime: the "System.Security" assembly on .NET
 # Framework / Windows PowerShell 5.1, versus "System.Security.Cryptography.Pkcs" on
 # .NET (Core) - neither is guaranteed to be loaded automatically, so try both.
-foreach ($assemblyName in 'System.Security', 'System.Security.Cryptography.Pkcs') {
-    try {
+foreach ($assemblyName in 'System.Security', 'System.Security.Cryptography.Pkcs')
+{
+    try
+    {
         Add-Type -AssemblyName $assemblyName -ErrorAction Stop
-    } catch {
+    }
+    catch
+    {
         # fall through - the other assembly name (or an already-loaded copy) may work
     }
 }
@@ -32,7 +36,8 @@ $script:OakleyGroup14PrimeHex = (
     '15728E5A8AACAA68FFFFFFFFFFFFFFFF'
 ) -replace '\s', ''
 
-function ConvertFrom-HexString {
+function ConvertFrom-HexString
+{
     [CmdletBinding()]
     [OutputType([byte[]])]
     param(
@@ -41,13 +46,15 @@ function ConvertFrom-HexString {
 
     $clean = $Hex -replace '\s', ''
     $bytes = New-Object byte[] ($clean.Length / 2)
-    for ($i = 0; $i -lt $bytes.Length; $i++) {
+    for ($i = 0; $i -lt $bytes.Length; $i++)
+    {
         $bytes[$i] = [Convert]::ToByte($clean.Substring($i * 2, 2), 16)
     }
     return $bytes
 }
 
-function ConvertTo-UnsignedBigInteger {
+function ConvertTo-UnsignedBigInteger
+{
     <#
         .SYNOPSIS
         Builds a positive System.Numerics.BigInteger from big-endian bytes (which is
@@ -60,13 +67,15 @@ function ConvertTo-UnsignedBigInteger {
 
     $little = [byte[]]$BigEndianBytes.Clone()
     [Array]::Reverse($little)
-    if ($little[$little.Length - 1] -ge 0x80) {
+    if ($little[$little.Length - 1] -ge 0x80)
+    {
         $little += [byte]0
     }
     return [System.Numerics.BigInteger]::new($little)
 }
 
-function ConvertTo-BigEndianBytes {
+function ConvertTo-BigEndianBytes
+{
     <#
         .SYNOPSIS
         Converts a non-negative BigInteger to minimal big-endian bytes (no sign byte
@@ -81,13 +90,15 @@ function ConvertTo-BigEndianBytes {
 
     $bytes = $Value.ToByteArray()
     [Array]::Reverse($bytes)
-    while ($bytes.Length -gt 1 -and $bytes[0] -eq 0) {
+    while ($bytes.Length -gt 1 -and $bytes[0] -eq 0)
+    {
         $bytes = $bytes[1..($bytes.Length - 1)]
     }
     return $bytes
 }
 
-function New-PkinitDiffieHellmanKeyPair {
+function New-PkinitDiffieHellmanKeyPair
+{
     <#
         .SYNOPSIS
         Generates a client Diffie-Hellman key pair using Oakley Group 14 (2048-bit
@@ -110,9 +121,12 @@ function New-PkinitDiffieHellmanKeyPair {
     # (same size as the modulus) for a comfortable margin, uniformly random in [2, p-2].
     $privateBytes = New-Object byte[] $modulusByteLength
     $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-    try {
+    try
+    {
         $rng.GetBytes($privateBytes)
-    } finally {
+    }
+    finally
+    {
         $rng.Dispose()
     }
     $privateBytes[0] = $privateBytes[0] -band 0x7f # keep positive / well below p
@@ -122,16 +136,17 @@ function New-PkinitDiffieHellmanKeyPair {
     $y = [System.Numerics.BigInteger]::ModPow($g, $x, $p)
 
     return [PSCustomObject]@{
-        P                 = $p
-        G                 = $g
-        Q                 = $q
-        PrivateExponent   = $x
-        PublicValue       = $y
+        P = $p
+        G = $g
+        Q = $q
+        PrivateExponent = $x
+        PublicValue = $y
         ModulusByteLength = $modulusByteLength
     }
 }
 
-function Get-PkinitDiffieHellmanSharedSecret {
+function Get-PkinitDiffieHellmanSharedSecret
+{
     <#
         .SYNOPSIS
         Computes DHSharedSecret = ZZ (RFC 2631 2.1.1: theirPublicValue^ourPrivateExponent
@@ -148,7 +163,8 @@ function Get-PkinitDiffieHellmanSharedSecret {
 
     $zz = [System.Numerics.BigInteger]::ModPow($TheirPublicValue, $OurPrivateExponent, $P)
     $bytes = ConvertTo-BigEndianBytes -Value $zz
-    if ($bytes.Length -lt $ModulusByteLength) {
+    if ($bytes.Length -lt $ModulusByteLength)
+    {
         $padded = New-Object byte[] $ModulusByteLength
         [Array]::Copy($bytes, 0, $padded, $ModulusByteLength - $bytes.Length, $bytes.Length)
         $bytes = $padded
@@ -156,7 +172,8 @@ function Get-PkinitDiffieHellmanSharedSecret {
     return $bytes
 }
 
-function ConvertTo-DhSubjectPublicKeyInfo {
+function ConvertTo-DhSubjectPublicKeyInfo
+{
     <#
         .SYNOPSIS
         Builds the clientPublicValue [1] SubjectPublicKeyInfo field of AuthPack for
@@ -191,7 +208,8 @@ function ConvertTo-DhSubjectPublicKeyInfo {
     return ConvertTo-Asn1Sequence -Children @($algorithmIdentifier, $subjectPublicKey)
 }
 
-function New-PkinitAuthPack {
+function New-PkinitAuthPack
+{
     <#
         .SYNOPSIS
         Builds the DER-encoded AuthPack (RFC 4556 3.2.1) for the Diffie-Hellman
@@ -224,7 +242,8 @@ function New-PkinitAuthPack {
     )
 }
 
-function New-PkinitSignedAuthPack {
+function New-PkinitSignedAuthPack
+{
     <#
         .SYNOPSIS
         CMS SignedData-wraps an AuthPack using the client's certificate (RFC 4556
@@ -259,7 +278,8 @@ function New-PkinitSignedAuthPack {
     return $signedCms.Encode()
 }
 
-function New-PkinitPaData {
+function New-PkinitPaData
+{
     <#
         .SYNOPSIS
         Builds the PA_PK_AS_REQ (padata-type 16) PA-DATA element:
@@ -278,7 +298,8 @@ function New-PkinitPaData {
     return New-PaData -PaDataType 16 -PaDataValue $paPkAsReq
 }
 
-function ConvertFrom-PkinitDhRepInfo {
+function ConvertFrom-PkinitDhRepInfo
+{
     <#
         .SYNOPSIS
         Parses the PA-PK-AS-REP (padata-type 17) padata-value for the
@@ -309,7 +330,8 @@ function ConvertFrom-PkinitDhRepInfo {
 
     $choice = Read-Asn1Tlv -Bytes $PaDataValue -Offset 0
     $choiceTagNumber = $choice.Tag -band 0x1f
-    if ($choiceTagNumber -ne 0) {
+    if ($choiceTagNumber -ne 0)
+    {
         throw "ConvertFrom-PkinitDhRepInfo: expected the dhInfo choice (tag [0]), got tag number $choiceTagNumber (encKeyPack is not supported by this module)."
     }
 
@@ -317,9 +339,11 @@ function ConvertFrom-PkinitDhRepInfo {
     $fields = Read-Asn1Sequence -Content $dhRepInfoSeq.Content
 
     $result = [PSCustomObject]@{ DhSignedData = $null; ServerDHNonce = $null }
-    foreach ($field in $fields) {
+    foreach ($field in $fields)
+    {
         $tagNumber = $field.Tag -band 0x1f
-        switch ($tagNumber) {
+        switch ($tagNumber)
+        {
             0 { $result.DhSignedData = $field.Content }
             1 { $result.ServerDHNonce = $field.Content }
             default { }
@@ -329,7 +353,8 @@ function ConvertFrom-PkinitDhRepInfo {
     return $result
 }
 
-function ConvertFrom-PkinitKdcDhKeyInfo {
+function ConvertFrom-PkinitKdcDhKeyInfo
+{
     <#
         .SYNOPSIS
         Decodes the CMS SignedData carried in DHRepInfo.dhSignedData (content
@@ -361,7 +386,8 @@ function ConvertFrom-PkinitKdcDhKeyInfo {
     $signedCms = [System.Security.Cryptography.Pkcs.SignedCms]::new()
     $signedCms.Decode($DhSignedData)
 
-    if (-not $SkipSignatureVerification) {
+    if (-not $SkipSignatureVerification)
+    {
         # $true = verify the cryptographic signature only; skip cert chain/revocation checks.
         $signedCms.CheckSignature($true)
     }
@@ -372,15 +398,18 @@ function ConvertFrom-PkinitKdcDhKeyInfo {
 
     $result = [PSCustomObject]@{
         ServerPublicValue = $null
-        Nonce             = $null
+        Nonce = $null
         SignerCertificate = if ($signedCms.SignerInfos.Count -gt 0) { $signedCms.SignerInfos[0].Certificate } else { $null }
     }
 
-    foreach ($field in $fields) {
+    foreach ($field in $fields)
+    {
         $tagNumber = $field.Tag -band 0x1f
         $inner = Read-Asn1Tlv -Bytes $field.Content -Offset 0
-        switch ($tagNumber) {
-            0 {
+        switch ($tagNumber)
+        {
+            0
+            {
                 # subjectPublicKey BIT STRING wraps a DER INTEGER: [unused-bits octet][INTEGER TLV].
                 $integerTlv = Read-Asn1Tlv -Bytes $inner.Content -Offset 1
                 $result.ServerPublicValue = ConvertTo-UnsignedBigInteger -BigEndianBytes $integerTlv.Content
@@ -392,3 +421,4 @@ function ConvertFrom-PkinitKdcDhKeyInfo {
 
     return $result
 }
+
