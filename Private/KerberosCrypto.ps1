@@ -33,6 +33,32 @@ function XorBytes
 
 function Get-Gcd
 {
+    <#
+        .SYNOPSIS
+        Finds the greatest common divisor of two integers.
+
+        .DESCRIPTION
+        Uses Euclid's algorithm to find the largest integer that divides both
+        values. The n-fold calculation uses this to work with buffer lengths.
+
+        .PARAMETER A
+        The first non-negative integer.
+
+        .PARAMETER B
+        The second non-negative integer. When it's zero, the function returns A.
+
+        .EXAMPLE
+        Get-Gcd -A 48 -B 18
+
+        Returns 6.
+
+        .OUTPUTS
+        System.Int64
+        The greatest common divisor. Two zero values return zero.
+
+        .NOTES
+        Internal helper for Kerberos n-fold, not a general-purpose math cmdlet.
+    #>
     param([long]$A, [long]$B)
     while ($B -ne 0)
     {

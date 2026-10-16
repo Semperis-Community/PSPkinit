@@ -102,6 +102,29 @@ function ConvertTo-Asn1Integer
 
 function ConvertTo-Asn1OctetString
 {
+    <#
+        .SYNOPSIS
+        Wraps bytes in an ASN.1 OCTET STRING.
+
+        .DESCRIPTION
+        Adds the tag and length required by Distinguished Encoding Rules (DER).
+        Your bytes stay unchanged. An empty array produces an empty OCTET STRING.
+
+        .PARAMETER Bytes
+        The bytes to wrap. An empty array is allowed.
+
+        .EXAMPLE
+        ConvertTo-Asn1OctetString -Bytes ([byte[]](0x41, 0x42))
+
+        Returns the encoded bytes 04 02 41 42.
+
+        .OUTPUTS
+        System.Byte[]
+        The complete encoded OCTET STRING, including its tag and length.
+
+        .NOTES
+        Internal ASN.1 helper. This wraps data; it doesn't encrypt it.
+    #>
     [CmdletBinding()]
     [OutputType([byte[]])]
     param(
@@ -131,6 +154,29 @@ function ConvertTo-Asn1BitString
 
 function ConvertTo-Asn1GeneralString
 {
+    <#
+        .SYNOPSIS
+        Encodes text as an ASN.1 GeneralString.
+
+        .DESCRIPTION
+        Converts your text to ASCII bytes, then adds the GeneralString tag and
+        length. This is the string encoding used for Kerberos names and realms.
+
+        .PARAMETER Value
+        The text to encode. Use ASCII characters; this isn't a UTF-8 encoder.
+
+        .EXAMPLE
+        ConvertTo-Asn1GeneralString -Value 'TEST.LOCAL'
+
+        Encodes a Kerberos realm as a complete GeneralString value.
+
+        .OUTPUTS
+        System.Byte[]
+        The encoded GeneralString, including its tag and length.
+
+        .NOTES
+        Internal ASN.1 helper. Characters outside ASCII use ASCII's fallback.
+    #>
     [CmdletBinding()]
     [OutputType([byte[]])]
     param(
@@ -381,6 +427,29 @@ function ConvertFrom-Asn1Integer
 
 function ConvertFrom-Asn1GeneralizedTime
 {
+    <#
+        .SYNOPSIS
+        Decodes a Kerberos timestamp into a UTC DateTime.
+
+        .DESCRIPTION
+        Reads ASCII text in yyyyMMddHHmmssZ format. Pass the content bytes,
+        not the ASN.1 tag or length. Fractional seconds aren't supported.
+
+        .PARAMETER Content
+        The GeneralizedTime content bytes returned by Read-Asn1Tlv.
+
+        .EXAMPLE
+        ConvertFrom-Asn1GeneralizedTime -Content ([System.Text.Encoding]::ASCII.GetBytes('20261016090000Z'))
+
+        Returns October 16, 2026 at 09:00:00 UTC.
+
+        .OUTPUTS
+        System.DateTime
+        The decoded time with its Kind set to Utc.
+
+        .NOTES
+        Internal ASN.1 helper. Invalid timestamp text causes a parsing error.
+    #>
     [CmdletBinding()]
     [OutputType([datetime])]
     param(
