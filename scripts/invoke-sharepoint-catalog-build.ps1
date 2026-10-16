@@ -161,6 +161,29 @@ function ConvertTo-HtmlEncoded
 
 function Get-UrlEncodedRelativePath
 {
+    <#
+    .SYNOPSIS
+    URL-encodes a relative path without encoding its slash separators.
+
+    .DESCRIPTION
+    Encodes each path segment separately, then joins the segments with slashes.
+    Spaces and other special characters get escaped; the folder structure stays.
+
+    .PARAMETER RelativePath
+    A raw relative path with forward slashes. Blank input returns an empty string.
+
+    .EXAMPLE
+    Get-UrlEncodedRelativePath -RelativePath 'release notes/README.md'
+
+    Returns release%20notes/README.md.
+
+    .OUTPUTS
+    System.String
+    The escaped relative path, or an empty string for blank input.
+
+    .NOTES
+    Pass an unencoded path. Existing percent escapes will get encoded again.
+    #>
     param([string]$RelativePath)
     if ([string]::IsNullOrWhiteSpace($RelativePath)) { return '' }
     return (([string]$RelativePath -split '/') | ForEach-Object { [System.Uri]::EscapeDataString($_) }) -join '/'
@@ -184,6 +207,33 @@ function Get-Stage
 
 function Get-RepositoryReadmeMarkdown
 {
+    <#
+    .SYNOPSIS
+    Gets a GitHub repository's README.md as Markdown text.
+
+    .DESCRIPTION
+    Uses the GitHub CLI to fetch the repository's README, then decodes its
+    Base64 content as UTF-8. Missing or unreadable README files return null.
+    README files in other formats return null too. No format conversion here.
+
+    .PARAMETER Owner
+    The GitHub organization or user that owns the repository.
+
+    .PARAMETER RepositoryName
+    The repository name, without the owner or a URL prefix.
+
+    .EXAMPLE
+    Get-RepositoryReadmeMarkdown -Owner 'Semperis-Community' -RepositoryName 'PSPkinit'
+
+    Returns PSPkinit's README.md content when the current GitHub CLI login can read it.
+
+    .OUTPUTS
+    System.String
+    The README Markdown, or null when no readable README.md is available.
+
+    .NOTES
+    Requires the gh CLI with access to the repository. This only reads from GitHub.
+    #>
     param(
         [Parameter(Mandatory = $true)][string]$Owner,
         [Parameter(Mandatory = $true)][string]$RepositoryName

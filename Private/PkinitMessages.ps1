@@ -223,13 +223,29 @@ function ConvertFrom-PaData
 {
     <#
         .SYNOPSIS
-        Decodes a single PA-DATA element (RFC 4120 5.2.7:
-        SEQUENCE { padata-type [1] Int32, padata-value [2] OCTET STRING })
-        into its type number and raw value bytes.
+        Decodes one Kerberos pre-authentication data element.
+
+        .DESCRIPTION
+        Reads the type number and raw value bytes from a PA-DATA element.
+        It doesn't decode the value itself. The type tells the caller what
+        to do with those bytes next.
 
         .PARAMETER Content
-        The content bytes of the PA-DATA SEQUENCE TLV (i.e. Read-Asn1Tlv's
-        .Content for a single child of the padata SEQUENCE OF).
+        The content bytes of one PA-DATA SEQUENCE, without its tag or length.
+        Use the Content property returned by Read-Asn1Tlv for that element.
+
+        .EXAMPLE
+        ConvertFrom-PaData -Content $paData.Content
+
+        Decodes a PA-DATA element already read with Read-Asn1Tlv.
+
+        .OUTPUTS
+        System.Management.Automation.PSCustomObject
+        An object with Type (Int32) and Value (Byte[]) properties. A missing
+        field leaves its property null.
+
+        .NOTES
+        Internal message parser. The PA-DATA layout comes from RFC 4120, section 5.2.7.
     #>
     [CmdletBinding()]
     param(

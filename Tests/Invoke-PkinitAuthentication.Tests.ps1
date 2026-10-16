@@ -11,13 +11,28 @@ BeforeAll {
     {
         <#
             .SYNOPSIS
-            Test-only helper: a throwaway self-signed cert with a private key,
-            good enough to sign/verify a CMS AuthPack or KDCDHKeyInfo. Pure
-            .NET - doesn't touch any PSPkinit internals, so it's a plain
-            script-scoped function rather than something defined via
-            InModuleScope (whose function definitions do NOT persist across
-            separate InModuleScope invocations - each call gets its own,
-            short-lived child scope of the module).
+            Creates a throwaway self-signed certificate for authentication tests.
+
+            .DESCRIPTION
+            Uses .NET to create a certificate with a 2048-bit RSA private key.
+            It's valid from yesterday until tomorrow, so tests can sign and
+            verify messages without a certificate authority or a store install.
+
+            .PARAMETER Subject
+            The certificate subject in distinguished-name form, such as CN=Test Client.
+
+            .EXAMPLE
+            New-TestSelfSignedCertificate -Subject 'CN=Test Client'
+
+            Returns an in-memory certificate with its private key. Nothing gets installed.
+
+            .OUTPUTS
+            System.Security.Cryptography.X509Certificates.X509Certificate2
+            The self-signed certificate used by the client or fake key distribution center.
+
+            .NOTES
+            Test use only. Keep this helper in test scope: function definitions
+            inside InModuleScope don't persist between separate calls.
         #>
         param([Parameter(Mandatory)] [string] $Subject)
 

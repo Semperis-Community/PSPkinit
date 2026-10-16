@@ -38,6 +38,29 @@ $script:OakleyGroup14PrimeHex = (
 
 function ConvertFrom-HexString
 {
+    <#
+        .SYNOPSIS
+        Converts hexadecimal text to bytes.
+
+        .DESCRIPTION
+        Removes whitespace and reads each pair of hexadecimal digits as one
+        byte. This lets us keep the Diffie-Hellman prime readable in the source.
+
+        .PARAMETER Hex
+        Hexadecimal byte pairs. Whitespace is fine; omit 0x prefixes and dashes.
+
+        .EXAMPLE
+        ConvertFrom-HexString -Hex 'CA FE 00'
+
+        Returns the three bytes 0xCA, 0xFE, and 0x00.
+
+        .OUTPUTS
+        System.Byte[]
+        The decoded bytes in the same order as the text.
+
+        .NOTES
+        Internal helper. Supply complete byte pairs, not an odd number of digits.
+    #>
     [CmdletBinding()]
     [OutputType([byte[]])]
     param(
