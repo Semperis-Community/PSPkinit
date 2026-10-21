@@ -12,22 +12,56 @@
     primitives plus faithful transcription of the formula.
 #>
 
-function XorBytes {
+function XorBytes
+{
+    <#
+        .SYNOPSIS
+        Performs a byte-wise XOR over two equal-length buffers.
+    #>
     param(
         [Parameter(Mandatory)] [byte[]]$A,
         [Parameter(Mandatory)] [byte[]]$B
     )
 
     $result = New-Object byte[] $A.Length
-    for ($i = 0; $i -lt $A.Length; $i++) {
+    for ($i = 0; $i -lt $A.Length; $i++)
+    {
         $result[$i] = $A[$i] -bxor $B[$i]
     }
     return $result
 }
 
-function Get-Gcd {
+function Get-Gcd
+{
+    <#
+        .SYNOPSIS
+        Finds the greatest common divisor of two integers.
+
+        .DESCRIPTION
+        Uses Euclid's algorithm to find the largest integer that divides both
+        values. The n-fold calculation uses this to work with buffer lengths.
+
+        .PARAMETER A
+        The first non-negative integer.
+
+        .PARAMETER B
+        The second non-negative integer. When it's zero, the function returns A.
+
+        .EXAMPLE
+        Get-Gcd -A 48 -B 18
+
+        Returns 6.
+
+        .OUTPUTS
+        System.Int64
+        The greatest common divisor. Two zero values return zero.
+
+        .NOTES
+        Internal helper for Kerberos n-fold, not a general-purpose math cmdlet.
+    #>
     param([long]$A, [long]$B)
-    while ($B -ne 0) {
+    while ($B -ne 0)
+    {
         $t = $B
         $B = $A % $B
         $A = $t
@@ -35,7 +69,8 @@ function Get-Gcd {
     return $A
 }
 
-function Invoke-AesBlockEncrypt {
+function Invoke-AesBlockEncrypt
+{
     <#
         .SYNOPSIS
         Encrypts exactly one 16-byte block with a fresh ICryptoTransform, since
@@ -48,14 +83,18 @@ function Invoke-AesBlockEncrypt {
     )
 
     $transform = $Aes.CreateEncryptor()
-    try {
+    try
+    {
         return $transform.TransformFinalBlock($Block, 0, $Block.Length)
-    } finally {
+    }
+    finally
+    {
         $transform.Dispose()
     }
 }
 
-function Invoke-AesBlockDecrypt {
+function Invoke-AesBlockDecrypt
+{
     <#
         .SYNOPSIS
         Decrypts exactly one 16-byte block with a fresh ICryptoTransform, since
@@ -68,14 +107,18 @@ function Invoke-AesBlockDecrypt {
     )
 
     $transform = $Aes.CreateDecryptor()
-    try {
+    try
+    {
         return $transform.TransformFinalBlock($Block, 0, $Block.Length)
-    } finally {
+    }
+    finally
+    {
         $transform.Dispose()
     }
 }
 
-function ConvertTo-NFold {
+function ConvertTo-NFold
+{
     <#
         .SYNOPSIS
         Implements the "n-fold" algorithm from RFC 3961 section 5.1.
@@ -111,7 +154,8 @@ function ConvertTo-NFold {
     $inBytes = $InputBytes.Length
     $outBytes = $OutputByteLength
 
-    if ($inBytes -eq $outBytes) {
+    if ($inBytes -eq $outBytes)
+    {
         return [byte[]]$InputBytes.Clone()
     }
 
@@ -123,9 +167,11 @@ function ConvertTo-NFold {
 
     # Build the replicated, cumulatively-rotated bit sequence (bigBits[0] = MSB).
     $bigBits = New-Object bool[] $lcmBits
-    for ($rep = 0; $rep -lt $repetitions; $rep++) {
+    for ($rep = 0; $rep -lt $repetitions; $rep++)
+    {
         $rotation = (13 * $rep) % $inBits
-        for ($bit = 0; $bit -lt $inBits; $bit++) {
+        for ($bit = 0; $bit -lt $inBits; $bit++)
+        {
             $srcBit = (($bit - $rotation) % $inBits + $inBits) % $inBits
             $byteIdx = [int][Math]::Floor($srcBit / 8)
             $bitInByte = $srcBit % 8
@@ -138,13 +184,17 @@ function ConvertTo-NFold {
     $numChunks = $lcmBits / $outBits
     $accumulator = New-Object byte[] $outBytes
 
-    for ($chunk = 0; $chunk -lt $numChunks; $chunk++) {
+    for ($chunk = 0; $chunk -lt $numChunks; $chunk++)
+    {
         $chunkBytes = New-Object byte[] $outBytes
-        for ($byteIdx = 0; $byteIdx -lt $outBytes; $byteIdx++) {
+        for ($byteIdx = 0; $byteIdx -lt $outBytes; $byteIdx++)
+        {
             $b = 0
-            for ($bitIdx = 0; $bitIdx -lt 8; $bitIdx++) {
+            for ($bitIdx = 0; $bitIdx -lt 8; $bitIdx++)
+            {
                 $globalBit = $chunk * $outBits + $byteIdx * 8 + $bitIdx
-                if ($bigBits[$globalBit]) {
+                if ($bigBits[$globalBit])
+                {
                     $b = $b -bor (1 -shl (7 - $bitIdx))
                 }
             }
@@ -153,15 +203,18 @@ function ConvertTo-NFold {
 
         [int]$carry = 0
         $newAcc = New-Object byte[] $outBytes
-        for ($i = $outBytes - 1; $i -ge 0; $i--) {
+        for ($i = $outBytes - 1; $i -ge 0; $i--)
+        {
             $sum = $accumulator[$i] + $chunkBytes[$i] + $carry
             $newAcc[$i] = $sum -band 0xff
             $carry = $sum -shr 8
         }
-        while ($carry -gt 0) {
+        while ($carry -gt 0)
+        {
             $innerCarry = $carry
             $carry = 0
-            for ($i = $outBytes - 1; $i -ge 0 -and $innerCarry -gt 0; $i--) {
+            for ($i = $outBytes - 1; $i -ge 0 -and $innerCarry -gt 0; $i--)
+            {
                 $sum = $newAcc[$i] + $innerCarry
                 $newAcc[$i] = $sum -band 0xff
                 $innerCarry = $sum -shr 8
@@ -174,7 +227,8 @@ function ConvertTo-NFold {
     return $accumulator
 }
 
-function Protect-AesCbcCts {
+function Protect-AesCbcCts
+{
     <#
         .SYNOPSIS
         AES-CBC encryption with ciphertext stealing (CTS), per RFC 3962 section 5.
@@ -195,16 +249,18 @@ function Protect-AesCbcCts {
     $aes.Mode = [System.Security.Cryptography.CipherMode]::ECB
     $aes.Padding = [System.Security.Cryptography.PaddingMode]::None
 
-    try {
+    try
+    {
         $len = $Plaintext.Length
 
-        if ($len -le $blockSize) {
+        if ($len -le $blockSize)
+        {
             $padded = New-Object byte[] $blockSize
             [Array]::Copy($Plaintext, $padded, $len)
             $cipherBlock = Invoke-AesBlockEncrypt -Aes $aes -Block $padded
             return [PSCustomObject]@{
                 Ciphertext = $cipherBlock[0..($len - 1)]
-                NextIv     = $cipherBlock
+                NextIv = $cipherBlock
             }
         }
 
@@ -212,7 +268,8 @@ function Protect-AesCbcCts {
         $d = $len - (($blockCount - 1) * $blockSize)
 
         $blocks = New-Object 'System.Collections.Generic.List[byte[]]'
-        for ($b = 0; $b -lt $blockCount; $b++) {
+        for ($b = 0; $b -lt $blockCount; $b++)
+        {
             $chunk = New-Object byte[] $blockSize
             $start = $b * $blockSize
             $copyLen = [Math]::Min($blockSize, $len - $start)
@@ -224,7 +281,8 @@ function Protect-AesCbcCts {
         $cipherBlocks = New-Object 'System.Collections.Generic.List[byte[]]'
         $prevCipher = $InitializationVector
 
-        for ($b = 0; $b -lt ($n - 2); $b++) {
+        for ($b = 0; $b -lt ($n - 2); $b++)
+        {
             $xored = XorBytes -A $blocks[$b] -B $prevCipher
             $c = Invoke-AesBlockEncrypt -Aes $aes -Block $xored
             $cipherBlocks.Add($c)
@@ -238,10 +296,12 @@ function Protect-AesCbcCts {
 
         # Dn = En-1 XOR P, where P is Pn zero-padded to a full block (RFC 2040 section 8, step 5).
         $dBlock = New-Object byte[] $blockSize
-        for ($i = 0; $i -lt $d; $i++) {
+        for ($i = 0; $i -lt $d; $i++)
+        {
             $dBlock[$i] = $eSecondLast[$i] -bxor $blocks[$n - 1][$i]
         }
-        if ($d -lt $blockSize) {
+        if ($d -lt $blockSize)
+        {
             [Array]::Copy($eSecondLast, $d, $dBlock, $d, $blockSize - $d)
         }
 
@@ -254,14 +314,17 @@ function Protect-AesCbcCts {
 
         return [PSCustomObject]@{
             Ciphertext = $allBytes.ToArray()
-            NextIv     = $cSecondLast
+            NextIv = $cSecondLast
         }
-    } finally {
+    }
+    finally
+    {
         $aes.Dispose()
     }
 }
 
-function Unprotect-AesCbcCts {
+function Unprotect-AesCbcCts
+{
     <#
         .SYNOPSIS
         AES-CBC decryption with ciphertext stealing (CTS), per RFC 3962 section 5.
@@ -283,10 +346,12 @@ function Unprotect-AesCbcCts {
     $aes.Mode = [System.Security.Cryptography.CipherMode]::ECB
     $aes.Padding = [System.Security.Cryptography.PaddingMode]::None
 
-    try {
+    try
+    {
         $len = $Ciphertext.Length
 
-        if ($len -le $blockSize) {
+        if ($len -le $blockSize)
+        {
             $padded = New-Object byte[] $blockSize
             [Array]::Copy($Ciphertext, $padded, $len)
             $plainBlock = Invoke-AesBlockDecrypt -Aes $aes -Block $padded
@@ -295,17 +360,21 @@ function Unprotect-AesCbcCts {
 
         $fullBlocks = [int][Math]::Floor($len / [double]$blockSize)
         $remainder = $len - ($fullBlocks * $blockSize)
-        if ($remainder -eq 0) {
+        if ($remainder -eq 0)
+        {
             $n = $fullBlocks
             $d = $blockSize
-        } else {
+        }
+        else
+        {
             $n = $fullBlocks + 1
             $d = $remainder
         }
 
         $cBlocks = New-Object 'System.Collections.Generic.List[byte[]]'
         $pos = 0
-        for ($b = 0; $b -lt ($n - 2); $b++) {
+        for ($b = 0; $b -lt ($n - 2); $b++)
+        {
             $cBlocks.Add([byte[]]$Ciphertext[$pos..($pos + $blockSize - 1)])
             $pos += $blockSize
         }
@@ -318,13 +387,15 @@ function Unprotect-AesCbcCts {
         # Pn = first Ln bytes of Xn, where Xn = Dn XOR C (Cn zero-padded) - so the leading
         # bytes must be XORed with the received Cn, not copied directly (RFC 2040 section 8).
         $pLastReal = New-Object byte[] $d
-        for ($i = 0; $i -lt $d; $i++) {
+        for ($i = 0; $i -lt $d; $i++)
+        {
             $pLastReal[$i] = $dBlock[$i] -bxor $cLast[$i]
         }
 
         $eSecondLast = New-Object byte[] $blockSize
         [Array]::Copy($cLast, 0, $eSecondLast, 0, $d)
-        if ($d -lt $blockSize) {
+        if ($d -lt $blockSize)
+        {
             [Array]::Copy($dBlock, $d, $eSecondLast, $d, $blockSize - $d)
         }
 
@@ -335,7 +406,8 @@ function Unprotect-AesCbcCts {
 
         $plainBlocks = [System.Collections.Generic.List[byte]]::new()
         $prevC = $InitializationVector
-        for ($b = 0; $b -lt ($n - 2); $b++) {
+        for ($b = 0; $b -lt ($n - 2); $b++)
+        {
             $p = Invoke-AesBlockDecrypt -Aes $aes -Block $cBlocks[$b]
             $p = XorBytes -A $p -B $prevC
             $plainBlocks.AddRange([byte[]]$p)
@@ -346,12 +418,15 @@ function Unprotect-AesCbcCts {
         $plainBlocks.AddRange([byte[]]$pLastReal)
 
         return $plainBlocks.ToArray()
-    } finally {
+    }
+    finally
+    {
         $aes.Dispose()
     }
 }
 
-function Get-KerberosUsageConstant {
+function Get-KerberosUsageConstant
+{
     <#
         .SYNOPSIS
         Builds the 5-octet "well-known constant" used by DK() for a given key usage
@@ -365,13 +440,15 @@ function Get-KerberosUsageConstant {
     )
 
     $usageBytes = [BitConverter]::GetBytes($KeyUsage)
-    if ([BitConverter]::IsLittleEndian) {
+    if ([BitConverter]::IsLittleEndian)
+    {
         [Array]::Reverse($usageBytes)
     }
     return $usageBytes + [byte[]]@($Suffix)
 }
 
-function Get-DR {
+function Get-DR
+{
     <#
         .SYNOPSIS
         RFC 3961 section 5.1 DR() (derived-random) function, specialised for AES
@@ -386,7 +463,8 @@ function Get-DR {
 
     $blockSize = 16
     $c = $Constant
-    if ($c.Length -ne $blockSize) {
+    if ($c.Length -ne $blockSize)
+    {
         $c = ConvertTo-NFold -InputBytes $c -OutputByteLength $blockSize
     }
 
@@ -396,10 +474,12 @@ function Get-DR {
     $aes.Mode = [System.Security.Cryptography.CipherMode]::ECB
     $aes.Padding = [System.Security.Cryptography.PaddingMode]::None
 
-    try {
+    try
+    {
         $blocks = [System.Collections.Generic.List[byte]]::new()
         $prev = $c
-        while ($blocks.Count -lt $needed) {
+        while ($blocks.Count -lt $needed)
+        {
             # Explicit [byte[]] cast: a script function's `return $byteArray` can come back
             # through the pipeline as System.Object[] rather than byte[] (observed on Windows
             # PowerShell 5.1 / .NET Framework), and List[byte].AddRange(IEnumerable<byte>) is a
@@ -410,12 +490,15 @@ function Get-DR {
             $prev = $block
         }
         return [byte[]]$blocks.ToArray()[0..($needed - 1)]
-    } finally {
+    }
+    finally
+    {
         $aes.Dispose()
     }
 }
 
-function Get-DK {
+function Get-DK
+{
     <#
         .SYNOPSIS
         RFC 3961 section 5.1 DK() (derived-key) function, specialised for AES
@@ -431,7 +514,8 @@ function Get-DK {
     return Get-DR -Key $BaseKey -Constant $Constant
 }
 
-function Get-KerberosDerivedKeys {
+function Get-KerberosDerivedKeys
+{
     <#
         .SYNOPSIS
         Derives the Kc/Ke/Ki triple used by the RFC 3961 simplified encryption/checksum
@@ -450,7 +534,8 @@ function Get-KerberosDerivedKeys {
     }
 }
 
-function Get-HmacSha1_96 {
+function Get-HmacSha1_96
+{
     <#
         .SYNOPSIS
         HMAC-SHA1 truncated to the first 96 bits (12 octets), as used by
@@ -464,15 +549,19 @@ function Get-HmacSha1_96 {
     )
 
     $hmac = [System.Security.Cryptography.HMACSHA1]::new($Key)
-    try {
+    try
+    {
         $full = $hmac.ComputeHash($Message)
         return $full[0..11]
-    } finally {
+    }
+    finally
+    {
         $hmac.Dispose()
     }
 }
 
-function ConvertTo-OctetString2Key {
+function ConvertTo-OctetString2Key
+{
     <#
         .SYNOPSIS
         RFC 4556 section 3.2.3.1 octetstring2key() function, used to derive the
@@ -487,22 +576,27 @@ function ConvertTo-OctetString2Key {
     )
 
     $sha1 = [System.Security.Cryptography.SHA1]::Create()
-    try {
+    try
+    {
         $output = [System.Collections.Generic.List[byte]]::new()
         $counter = 0
-        while ($output.Count -lt $KeyByteLength) {
+        while ($output.Count -lt $KeyByteLength)
+        {
             $prefixed = [byte[]]@([byte]$counter) + $InputBytes
             $hash = $sha1.ComputeHash($prefixed)
             $output.AddRange($hash)
             $counter++
         }
         return $output.ToArray()[0..($KeyByteLength - 1)]
-    } finally {
+    }
+    finally
+    {
         $sha1.Dispose()
     }
 }
 
-function Protect-KerberosData {
+function Protect-KerberosData
+{
     <#
         .SYNOPSIS
         RFC 3961 section 5.3 simplified-profile encryption: confounder + plaintext,
@@ -520,9 +614,12 @@ function Protect-KerberosData {
     $keys = Get-KerberosDerivedKeys -BaseKey $BaseKey -KeyUsage $KeyUsage
     $confounder = New-Object byte[] 16
     $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-    try {
+    try
+    {
         $rng.GetBytes($confounder)
-    } finally {
+    }
+    finally
+    {
         $rng.Dispose()
     }
 
@@ -534,7 +631,8 @@ function Protect-KerberosData {
     return $encrypted.Ciphertext + $mac
 }
 
-function Unprotect-KerberosData {
+function Unprotect-KerberosData
+{
     <#
         .SYNOPSIS
         Reverses Protect-KerberosData: verifies the HMAC-SHA1-96 trailer under Ki,
@@ -551,7 +649,8 @@ function Unprotect-KerberosData {
     $keys = Get-KerberosDerivedKeys -BaseKey $BaseKey -KeyUsage $KeyUsage
     $macLength = 12
     $cipherLength = $Ciphertext.Length - $macLength
-    if ($cipherLength -le 0) {
+    if ($cipherLength -le 0)
+    {
         throw 'Ciphertext too short to contain an HMAC-SHA1-96 trailer.'
     }
 
@@ -563,9 +662,11 @@ function Unprotect-KerberosData {
 
     $computedMac = Get-HmacSha1_96 -Key $keys.Ki -Message $decrypted
     $macsMatch = [System.Linq.Enumerable]::SequenceEqual([byte[]]$computedMac, [byte[]]$receivedMac)
-    if (-not $macsMatch) {
+    if (-not $macsMatch)
+    {
         throw 'Kerberos EncryptedData integrity check failed (HMAC mismatch) - wrong key or corrupted data.'
     }
 
     return $decrypted[16..($decrypted.Length - 1)]
 }
+

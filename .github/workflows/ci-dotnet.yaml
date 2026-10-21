@@ -1,4 +1,4 @@
-name: CI .NET Wrapper
+name: CI .NET
 
 on:
   workflow_call:
@@ -13,10 +13,276 @@ on:
         default: pipeline-config/ref/test-dependencies.yaml
 
 jobs:
-  ci-dotnet:
-    if: ${{ vars.PIPELINE_ENABLED == 'true' }}
-    uses: Semperis-Community/.github/.github/workflows/ci-dotnet-reusable.yaml@v1.0.0
-    with:
-      ref: ${{ inputs.ref }}
-      dependency-file: ${{ inputs['dependency-file'] }}
-    secrets: inherit
+  detect:
+    runs-on: windows-2022
+    outputs:
+      has_project: ${{ steps.detect.outputs.has_project }}
+      has_lock: ${{ steps.detect.outputs.has_lock }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Detect .NET project content
+        id: detect
+        shell: pwsh
+        run: |
+          $projects = @(Get-ChildItem -Path . -Recurse -File -Include *.sln,*.csproj -ErrorAction SilentlyContinue)
+          $hasProject = $projects.Count -gt 0
+          $hasLock = @(Get-ChildItem -Path . -Recurse -File -Filter packages.lock.json -ErrorAction SilentlyContinue).Count -gt 0
+
+          "has_project=$($hasProject.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "has_lock=$($hasLock.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+  format-check:
+    needs: detect
+    if: needs.detect.outputs.has_project == 'true'
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '9.0.x'
+          cache: false
+
+      - name: Configure NuGet sources from dependency file
+        shell: pwsh
+        run: |
+          $dependencyFile = "${{ inputs.dependency-file }}"
+          if (-not (Test-Path $dependencyFile)) {
+            Write-Host "Dependency file '$dependencyFile' not found. Using default NuGet sources."
+            exit 0
+          }
+
+          if (-not (Get-Command ConvertFrom-Yaml -ErrorAction SilentlyContinue)) {
+            if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
+              Register-PSRepository -Default -ErrorAction Stop
+            }
+            Install-Module -Name powershell-yaml -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+            Import-Module powershell-yaml -ErrorAction Stop
+          }
+
+          $dependencyConfig = Get-Content -Path $dependencyFile -Raw | ConvertFrom-Yaml -ErrorAction Stop
+          $nugetSources = @()
+          if ($null -ne $dependencyConfig.nugetSources) {
+            $nugetSources = @($dependencyConfig.nugetSources)
+          }
+
+          foreach ($source in $nugetSources) {
+            $sourceName = $source.name
+            $sourceUrl = $source.url
+            if ([string]::IsNullOrWhiteSpace($sourceName) -or [string]::IsNullOrWhiteSpace($sourceUrl)) {
+              throw "Each nugetSources entry must include 'name' and 'url'."
+            }
+
+            try {
+              dotnet nuget add source $sourceUrl --name $sourceName
+              Write-Host "Added NuGet source '$sourceName' ($sourceUrl)."
+            }
+            catch {
+              dotnet nuget update source $sourceName --source $sourceUrl
+              Write-Host "Updated NuGet source '$sourceName' ($sourceUrl)."
+            }
+          }
+
+      - name: Lint .NET and C# code
+        shell: pwsh
+        run: |
+          dotnet format --verify-no-changes
+
+  analysis-check:
+    needs: detect
+    if: needs.detect.outputs.has_project == 'true'
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '9.0.x'
+          cache: false
+
+      - name: Configure NuGet sources from dependency file
+        shell: pwsh
+        run: |
+          $dependencyFile = "${{ inputs.dependency-file }}"
+          if (-not (Test-Path $dependencyFile)) {
+            Write-Host "Dependency file '$dependencyFile' not found. Using default NuGet sources."
+            exit 0
+          }
+
+          if (-not (Get-Command ConvertFrom-Yaml -ErrorAction SilentlyContinue)) {
+            if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
+              Register-PSRepository -Default -ErrorAction Stop
+            }
+            Install-Module -Name powershell-yaml -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+            Import-Module powershell-yaml -ErrorAction Stop
+          }
+
+          $dependencyConfig = Get-Content -Path $dependencyFile -Raw | ConvertFrom-Yaml -ErrorAction Stop
+          $nugetSources = @()
+          if ($null -ne $dependencyConfig.nugetSources) {
+            $nugetSources = @($dependencyConfig.nugetSources)
+          }
+
+          foreach ($source in $nugetSources) {
+            $sourceName = $source.name
+            $sourceUrl = $source.url
+            if ([string]::IsNullOrWhiteSpace($sourceName) -or [string]::IsNullOrWhiteSpace($sourceUrl)) {
+              throw "Each nugetSources entry must include 'name' and 'url'."
+            }
+
+            try {
+              dotnet nuget add source $sourceUrl --name $sourceName
+              Write-Host "Added NuGet source '$sourceName' ($sourceUrl)."
+            }
+            catch {
+              dotnet nuget update source $sourceName --source $sourceUrl
+              Write-Host "Updated NuGet source '$sourceName' ($sourceUrl)."
+            }
+          }
+
+      - name: Restore .NET dependencies
+        shell: pwsh
+        run: |
+          dotnet restore
+
+      - name: Build .NET solution
+        shell: pwsh
+        run: |
+          dotnet build --configuration Release --no-restore
+
+  test:
+    needs: detect
+    if: needs.detect.outputs.has_project == 'true'
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '9.0.x'
+          cache: false
+
+      - name: Configure NuGet sources from dependency file
+        shell: pwsh
+        run: |
+          $dependencyFile = "${{ inputs.dependency-file }}"
+          if (-not (Test-Path $dependencyFile)) {
+            Write-Host "Dependency file '$dependencyFile' not found. Using default NuGet sources."
+            exit 0
+          }
+
+          if (-not (Get-Command ConvertFrom-Yaml -ErrorAction SilentlyContinue)) {
+            if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
+              Register-PSRepository -Default -ErrorAction Stop
+            }
+            Install-Module -Name powershell-yaml -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+            Import-Module powershell-yaml -ErrorAction Stop
+          }
+
+          $dependencyConfig = Get-Content -Path $dependencyFile -Raw | ConvertFrom-Yaml -ErrorAction Stop
+          $nugetSources = @()
+          if ($null -ne $dependencyConfig.nugetSources) {
+            $nugetSources = @($dependencyConfig.nugetSources)
+          }
+
+          foreach ($source in $nugetSources) {
+            $sourceName = $source.name
+            $sourceUrl = $source.url
+            if ([string]::IsNullOrWhiteSpace($sourceName) -or [string]::IsNullOrWhiteSpace($sourceUrl)) {
+              throw "Each nugetSources entry must include 'name' and 'url'."
+            }
+
+            try {
+              dotnet nuget add source $sourceUrl --name $sourceName
+              Write-Host "Added NuGet source '$sourceName' ($sourceUrl)."
+            }
+            catch {
+              dotnet nuget update source $sourceName --source $sourceUrl
+              Write-Host "Updated NuGet source '$sourceName' ($sourceUrl)."
+            }
+          }
+
+      - name: Restore .NET dependencies
+        shell: pwsh
+        run: |
+          dotnet restore
+
+      - name: Run .NET tests
+        shell: pwsh
+        run: |
+          dotnet test --configuration Release --no-restore --logger "trx;LogFileName=dotnet-test-results.trx" --results-directory TestResults
+
+      - name: Upload .NET test results
+        if: always() && hashFiles('TestResults/*.trx') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: dotnet-test-results
+          path: TestResults/*.trx
+
+  no-project:
+    needs: detect
+    if: needs.detect.outputs.has_project != 'true'
+    runs-on: windows-2022
+
+    steps:
+      - name: Skip validation for missing .NET project content
+        shell: pwsh
+        run: |
+          Write-Host "No .NET solution or project files found. Skipping .NET validation."
+
+  validation-summary:
+    needs:
+      - detect
+      - format-check
+      - analysis-check
+      - test
+      - no-project
+    if: always()
+    runs-on: windows-2022
+
+    steps:
+      - name: Summarize validation status
+        shell: pwsh
+        run: |
+          $results = @(
+            @{ Name = 'detect'; Result = '${{ needs.detect.result }}' },
+            @{ Name = 'format-check'; Result = '${{ needs.format-check.result }}' },
+            @{ Name = 'analysis-check'; Result = '${{ needs.analysis-check.result }}' },
+            @{ Name = 'test'; Result = '${{ needs.test.result }}' },
+            @{ Name = 'no-project'; Result = '${{ needs.no-project.result }}' }
+          )
+
+          $results | Format-Table -AutoSize
+
+          $failed = $results | Where-Object { $_.Result -in @('failure', 'cancelled') }
+          if ($failed.Count -gt 0) {
+            throw "One or more .NET validation jobs failed: $($failed.Name -join ', ')."
+          }
+
+          $skipped = $results | Where-Object { $_.Result -eq 'skipped' }
+          if ($skipped.Count -eq $results.Count) {
+            Write-Host "No .NET project content was detected; all validation steps were skipped."
+            exit 0
+          }
+
+          Write-Host "All .NET validation jobs succeeded or were intentionally skipped."
+

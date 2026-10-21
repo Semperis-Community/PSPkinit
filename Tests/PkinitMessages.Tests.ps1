@@ -1,3 +1,8 @@
+<#
+    .SYNOPSIS
+    Pester tests for PKINIT message helpers.
+#>
+
 BeforeAll {
     . $PSScriptRoot/../Private/Asn1.ps1
     . $PSScriptRoot/../Private/KerberosCrypto.ps1

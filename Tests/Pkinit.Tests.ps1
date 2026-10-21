@@ -1,3 +1,8 @@
+<#
+    .SYNOPSIS
+    Pester tests for PKINIT Diffie-Hellman helpers.
+#>
+
 BeforeAll {
     . $PSScriptRoot/../Private/Asn1.ps1
     . $PSScriptRoot/../Private/Pkinit.ps1
@@ -46,7 +51,12 @@ Describe 'ConvertTo-DhSubjectPublicKeyInfo' {
 
 Describe 'ConvertFrom-PkinitDhRepInfo / ConvertFrom-PkinitKdcDhKeyInfo' {
     BeforeAll {
-        function New-TestSigningCertificate {
+        function New-TestSigningCertificate
+        {
+            <#
+                .SYNOPSIS
+                Creates a self-signed certificate used only to validate PKINIT DH reply encoding.
+            #>
             $rsa = [System.Security.Cryptography.RSA]::Create(2048)
             $req = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new(
                 'CN=Test PKINIT KDC', $rsa, [System.Security.Cryptography.HashAlgorithmName]::SHA256,
@@ -54,7 +64,12 @@ Describe 'ConvertFrom-PkinitDhRepInfo / ConvertFrom-PkinitKdcDhKeyInfo' {
             return $req.CreateSelfSigned([datetimeoffset]::UtcNow.AddDays(-1), [datetimeoffset]::UtcNow.AddDays(1))
         }
 
-        function New-TestDhRepInfoPaDataValue {
+        function New-TestDhRepInfoPaDataValue
+        {
+            <#
+                .SYNOPSIS
+                Builds a hand-crafted PKINIT DHRepInfo PA-DATA value for test validation.
+            #>
             param($ServerPublicValueBigInteger, [uint32]$Nonce, $SigningCert)
 
             $publicValueInteger = ConvertTo-Asn1Integer -Bytes (ConvertTo-BigEndianBytes -Value $ServerPublicValueBigInteger)
@@ -101,3 +116,4 @@ Describe 'ConvertFrom-PkinitDhRepInfo / ConvertFrom-PkinitKdcDhKeyInfo' {
         { ConvertFrom-PkinitDhRepInfo -PaDataValue $unsupported } | Should -Throw
     }
 }
+

@@ -1,17 +1,38 @@
+<#
+    .SYNOPSIS
+    Pester tests for Invoke-PkinitAuthentication.
+#>
+
 BeforeAll {
     $modulePath = Join-Path -Path $PSScriptRoot -ChildPath '..\PSPkinit.psd1'
     Import-Module -Name $modulePath -Force
 
-    function New-TestSelfSignedCertificate {
+    function New-TestSelfSignedCertificate
+    {
         <#
             .SYNOPSIS
-            Test-only helper: a throwaway self-signed cert with a private key,
-            good enough to sign/verify a CMS AuthPack or KDCDHKeyInfo. Pure
-            .NET - doesn't touch any PSPkinit internals, so it's a plain
-            script-scoped function rather than something defined via
-            InModuleScope (whose function definitions do NOT persist across
-            separate InModuleScope invocations - each call gets its own,
-            short-lived child scope of the module).
+            Creates a throwaway self-signed certificate for authentication tests.
+
+            .DESCRIPTION
+            Uses .NET to create a certificate with a 2048-bit RSA private key.
+            It's valid from yesterday until tomorrow, so tests can sign and
+            verify messages without a certificate authority or a store install.
+
+            .PARAMETER Subject
+            The certificate subject in distinguished-name form, such as CN=Test Client.
+
+            .EXAMPLE
+            New-TestSelfSignedCertificate -Subject 'CN=Test Client'
+
+            Returns an in-memory certificate with its private key. Nothing gets installed.
+
+            .OUTPUTS
+            System.Security.Cryptography.X509Certificates.X509Certificate2
+            The self-signed certificate used by the client or fake key distribution center.
+
+            .NOTES
+            Test use only. Keep this helper in test scope: function definitions
+            inside InModuleScope don't persist between separate calls.
         #>
         param([Parameter(Mandatory)] [string] $Subject)
 
@@ -62,9 +83,12 @@ Describe 'Invoke-PkinitAuthentication' {
 
         It 'throws a terminating SecurityError carrying the parsed KRB-ERROR details' {
             $errorRecord = $null
-            try {
+            try
+            {
                 Invoke-PkinitAuthentication -Certificate $script:clientCert -ClientName 'user@test.local' -Realm 'TEST.LOCAL' -KdcHostname 'kdc.test.local' -ErrorAction Stop
-            } catch {
+            }
+            catch
+            {
                 $errorRecord = $_
             }
 
@@ -96,99 +120,99 @@ Describe 'Invoke-PkinitAuthentication' {
                     $outer = Read-Asn1Tlv -Bytes $Message -Offset 0
                     $kdcReqSeq = Read-Asn1Tlv -Bytes $outer.Content -Offset 0
                     $kdcReqFields = Read-Asn1Sequence -Content $kdcReqSeq.Content
-                $padataField = $kdcReqFields | Where-Object { ($_.Tag -band 0x1f) -eq 3 }
-                $padataInner = Read-Asn1Tlv -Bytes $padataField.Content -Offset 0
-                $paDataItems = Read-Asn1Sequence -Content $padataInner.Content
-                $paPkAsReqItem = $paDataItems | ForEach-Object { ConvertFrom-PaData -Content $_.Content } | Where-Object { $_.Type -eq 16 }
+                    $padataField = $kdcReqFields | Where-Object { ($_.Tag -band 0x1f) -eq 3 }
+                    $padataInner = Read-Asn1Tlv -Bytes $padataField.Content -Offset 0
+                    $paDataItems = Read-Asn1Sequence -Content $padataInner.Content
+                    $paPkAsReqItem = $paDataItems | ForEach-Object { ConvertFrom-PaData -Content $_.Content } | Where-Object { $_.Type -eq 16 }
 
-                $paPkAsReqSeq = Read-Asn1Tlv -Bytes $paPkAsReqItem.Value -Offset 0
-                $paPkAsReqFields = Read-Asn1Sequence -Content $paPkAsReqSeq.Content
-                $signedAuthPackBytes = $paPkAsReqFields[0].Content
+                    $paPkAsReqSeq = Read-Asn1Tlv -Bytes $paPkAsReqItem.Value -Offset 0
+                    $paPkAsReqFields = Read-Asn1Sequence -Content $paPkAsReqSeq.Content
+                    $signedAuthPackBytes = $paPkAsReqFields[0].Content
 
-                $clientSignedCms = [System.Security.Cryptography.Pkcs.SignedCms]::new()
-                $clientSignedCms.Decode($signedAuthPackBytes)
-                $authPack = $clientSignedCms.ContentInfo.Content
+                    $clientSignedCms = [System.Security.Cryptography.Pkcs.SignedCms]::new()
+                    $clientSignedCms.Decode($signedAuthPackBytes)
+                    $authPack = $clientSignedCms.ContentInfo.Content
 
-                $authPackSeq = Read-Asn1Tlv -Bytes $authPack -Offset 0
-                $authPackFields = Read-Asn1Sequence -Content $authPackSeq.Content
+                    $authPackSeq = Read-Asn1Tlv -Bytes $authPack -Offset 0
+                    $authPackFields = Read-Asn1Sequence -Content $authPackSeq.Content
 
-                $pkAuthenticatorOuter = Read-Asn1Tlv -Bytes $authPackFields[0].Content -Offset 0
-                $pkAuthenticatorFields = Read-Asn1Sequence -Content $pkAuthenticatorOuter.Content
-                $nonceField = $pkAuthenticatorFields | Where-Object { ($_.Tag -band 0x1f) -eq 2 }
-                $nonceInner = Read-Asn1Tlv -Bytes $nonceField.Content -Offset 0
-                $clientNonce = [uint32](ConvertFrom-Asn1Integer -Content $nonceInner.Content)
+                    $pkAuthenticatorOuter = Read-Asn1Tlv -Bytes $authPackFields[0].Content -Offset 0
+                    $pkAuthenticatorFields = Read-Asn1Sequence -Content $pkAuthenticatorOuter.Content
+                    $nonceField = $pkAuthenticatorFields | Where-Object { ($_.Tag -band 0x1f) -eq 2 }
+                    $nonceInner = Read-Asn1Tlv -Bytes $nonceField.Content -Offset 0
+                    $clientNonce = [uint32](ConvertFrom-Asn1Integer -Content $nonceInner.Content)
 
-                $spkiOuter = Read-Asn1Tlv -Bytes $authPackFields[1].Content -Offset 0
-                $spkiFields = Read-Asn1Sequence -Content $spkiOuter.Content
-                $integerTlv = Read-Asn1Tlv -Bytes $spkiFields[1].Content -Offset 1
-                $clientPublicValue = ConvertTo-UnsignedBigInteger -BigEndianBytes $integerTlv.Content
+                    $spkiOuter = Read-Asn1Tlv -Bytes $authPackFields[1].Content -Offset 0
+                    $spkiFields = Read-Asn1Sequence -Content $spkiOuter.Content
+                    $integerTlv = Read-Asn1Tlv -Bytes $spkiFields[1].Content -Offset 1
+                    $clientPublicValue = ConvertTo-UnsignedBigInteger -BigEndianBytes $integerTlv.Content
 
-                # Act as the KDC: fresh server DH keypair (same hardcoded Oakley Group 14 params), compute ZZ.
-                $serverDh = New-PkinitDiffieHellmanKeyPair
-                $sharedSecret = Get-PkinitDiffieHellmanSharedSecret -TheirPublicValue $clientPublicValue -OurPrivateExponent $serverDh.PrivateExponent -P $serverDh.P -ModulusByteLength $serverDh.ModulusByteLength
+                    # Act as the KDC: fresh server DH keypair (same hardcoded Oakley Group 14 params), compute ZZ.
+                    $serverDh = New-PkinitDiffieHellmanKeyPair
+                    $sharedSecret = Get-PkinitDiffieHellmanSharedSecret -TheirPublicValue $clientPublicValue -OurPrivateExponent $serverDh.PrivateExponent -P $serverDh.P -ModulusByteLength $serverDh.ModulusByteLength
 
-                $publicValueInteger = ConvertTo-Asn1Integer -Bytes (ConvertTo-BigEndianBytes -Value $serverDh.PublicValue)
-                $subjectPublicKey = ConvertTo-Asn1BitString -Bytes $publicValueInteger
-                $kdcDhKeyInfo = ConvertTo-Asn1Sequence -Children @(
-                    (ConvertTo-Asn1ContextExplicit -TagNumber 0 -InnerTlv $subjectPublicKey)
-                    (ConvertTo-Asn1ContextExplicit -TagNumber 1 -InnerTlv (ConvertTo-Asn1Integer -Value ([long]$clientNonce)))
-                )
-                $contentInfo = [System.Security.Cryptography.Pkcs.ContentInfo]::new([System.Security.Cryptography.Oid]::new('1.3.6.1.5.2.3.2'), $kdcDhKeyInfo)
-                $kdcSignedCms = [System.Security.Cryptography.Pkcs.SignedCms]::new($contentInfo, $false)
-                $kdcSigner = [System.Security.Cryptography.Pkcs.CmsSigner]::new([System.Security.Cryptography.Pkcs.SubjectIdentifierType]::IssuerAndSerialNumber, $kdcCert)
-                $kdcSigner.IncludeOption = [System.Security.Cryptography.X509Certificates.X509IncludeOption]::EndCertOnly
-                $kdcSignedCms.ComputeSignature($kdcSigner, $false)
-                $dhSignedData = $kdcSignedCms.Encode()
+                    $publicValueInteger = ConvertTo-Asn1Integer -Bytes (ConvertTo-BigEndianBytes -Value $serverDh.PublicValue)
+                    $subjectPublicKey = ConvertTo-Asn1BitString -Bytes $publicValueInteger
+                    $kdcDhKeyInfo = ConvertTo-Asn1Sequence -Children @(
+                        (ConvertTo-Asn1ContextExplicit -TagNumber 0 -InnerTlv $subjectPublicKey)
+                        (ConvertTo-Asn1ContextExplicit -TagNumber 1 -InnerTlv (ConvertTo-Asn1Integer -Value ([long]$clientNonce)))
+                    )
+                    $contentInfo = [System.Security.Cryptography.Pkcs.ContentInfo]::new([System.Security.Cryptography.Oid]::new('1.3.6.1.5.2.3.2'), $kdcDhKeyInfo)
+                    $kdcSignedCms = [System.Security.Cryptography.Pkcs.SignedCms]::new($contentInfo, $false)
+                    $kdcSigner = [System.Security.Cryptography.Pkcs.CmsSigner]::new([System.Security.Cryptography.Pkcs.SubjectIdentifierType]::IssuerAndSerialNumber, $kdcCert)
+                    $kdcSigner.IncludeOption = [System.Security.Cryptography.X509Certificates.X509IncludeOption]::EndCertOnly
+                    $kdcSignedCms.ComputeSignature($kdcSigner, $false)
+                    $dhSignedData = $kdcSignedCms.Encode()
 
-                $dhRepInfo = ConvertTo-Asn1Sequence -Children @(
-                    (ConvertTo-Asn1ContextImplicitPrimitive -TagNumber 0 -Content $dhSignedData)
-                )
-                $paPkAsRepValue = ConvertTo-Asn1ContextExplicit -TagNumber 0 -InnerTlv $dhRepInfo
-                $paPkAsRepPaData = New-PaData -PaDataType 17 -PaDataValue $paPkAsRepValue
+                    $dhRepInfo = ConvertTo-Asn1Sequence -Children @(
+                        (ConvertTo-Asn1ContextImplicitPrimitive -TagNumber 0 -Content $dhSignedData)
+                    )
+                    $paPkAsRepValue = ConvertTo-Asn1ContextExplicit -TagNumber 0 -InnerTlv $dhRepInfo
+                    $paPkAsRepPaData = New-PaData -PaDataType 17 -PaDataValue $paPkAsRepValue
 
-                $replyKey = ConvertTo-OctetString2Key -InputBytes $sharedSecret -KeyByteLength 32
+                    $replyKey = ConvertTo-OctetString2Key -InputBytes $sharedSecret -KeyByteLength 32
 
-                $sessionKey = New-Object byte[] 32
-                $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-                try { $rng.GetBytes($sessionKey) } finally { $rng.Dispose() }
+                    $sessionKey = New-Object byte[] 32
+                    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+                    try { $rng.GetBytes($sessionKey) } finally { $rng.Dispose() }
 
-                $keySeq = ConvertTo-Asn1Sequence -Children @(
-                    (ConvertTo-Asn1ContextExplicit -TagNumber 0 -InnerTlv (ConvertTo-Asn1Integer -Value 18))
-                    (ConvertTo-Asn1ContextExplicit -TagNumber 1 -InnerTlv (ConvertTo-Asn1OctetString -Bytes $sessionKey))
-                )
-                $now = (Get-Date).ToUniversalTime()
-                $sname = ConvertTo-KerberosPrincipalName -NameType 2 -NameStrings @('krbtgt', 'TEST.LOCAL')
-                $encKdcRepPart = ConvertTo-Asn1Sequence -Children @(
-                    (ConvertTo-Asn1ContextExplicit -TagNumber 0 -InnerTlv $keySeq)
-                    (ConvertTo-Asn1ContextExplicit -TagNumber 2 -InnerTlv (ConvertTo-Asn1Integer -Value ([long]$clientNonce)))
-                    (ConvertTo-Asn1ContextExplicit -TagNumber 4 -InnerTlv (ConvertTo-KerberosFlags -Value 0x40810000))
-                    (ConvertTo-Asn1ContextExplicit -TagNumber 5 -InnerTlv (ConvertTo-Asn1GeneralizedTime -Value $now))
-                    (ConvertTo-Asn1ContextExplicit -TagNumber 7 -InnerTlv (ConvertTo-Asn1GeneralizedTime -Value $now.AddHours(10)))
-                    (ConvertTo-Asn1ContextExplicit -TagNumber 9 -InnerTlv (ConvertTo-Asn1GeneralString -Value 'TEST.LOCAL'))
-                    (ConvertTo-Asn1ContextExplicit -TagNumber 10 -InnerTlv $sname)
-                )
-                $encKdcRepPartMessage = ConvertTo-Asn1ApplicationConstructed -TagNumber 25 -InnerTlv $encKdcRepPart
-                $cipher = Protect-KerberosData -BaseKey $replyKey -KeyUsage 3 -Plaintext $encKdcRepPartMessage
+                    $keySeq = ConvertTo-Asn1Sequence -Children @(
+                        (ConvertTo-Asn1ContextExplicit -TagNumber 0 -InnerTlv (ConvertTo-Asn1Integer -Value 18))
+                        (ConvertTo-Asn1ContextExplicit -TagNumber 1 -InnerTlv (ConvertTo-Asn1OctetString -Bytes $sessionKey))
+                    )
+                    $now = (Get-Date).ToUniversalTime()
+                    $sname = ConvertTo-KerberosPrincipalName -NameType 2 -NameStrings @('krbtgt', 'TEST.LOCAL')
+                    $encKdcRepPart = ConvertTo-Asn1Sequence -Children @(
+                        (ConvertTo-Asn1ContextExplicit -TagNumber 0 -InnerTlv $keySeq)
+                        (ConvertTo-Asn1ContextExplicit -TagNumber 2 -InnerTlv (ConvertTo-Asn1Integer -Value ([long]$clientNonce)))
+                        (ConvertTo-Asn1ContextExplicit -TagNumber 4 -InnerTlv (ConvertTo-KerberosFlags -Value 0x40810000))
+                        (ConvertTo-Asn1ContextExplicit -TagNumber 5 -InnerTlv (ConvertTo-Asn1GeneralizedTime -Value $now))
+                        (ConvertTo-Asn1ContextExplicit -TagNumber 7 -InnerTlv (ConvertTo-Asn1GeneralizedTime -Value $now.AddHours(10)))
+                        (ConvertTo-Asn1ContextExplicit -TagNumber 9 -InnerTlv (ConvertTo-Asn1GeneralString -Value 'TEST.LOCAL'))
+                        (ConvertTo-Asn1ContextExplicit -TagNumber 10 -InnerTlv $sname)
+                    )
+                    $encKdcRepPartMessage = ConvertTo-Asn1ApplicationConstructed -TagNumber 25 -InnerTlv $encKdcRepPart
+                    $cipher = Protect-KerberosData -BaseKey $replyKey -KeyUsage 3 -Plaintext $encKdcRepPartMessage
 
-                $encPartSeq = ConvertTo-Asn1Sequence -Children @(
-                    (ConvertTo-Asn1ContextExplicit -TagNumber 0 -InnerTlv (ConvertTo-Asn1Integer -Value 18))
-                    (ConvertTo-Asn1ContextExplicit -TagNumber 2 -InnerTlv (ConvertTo-Asn1OctetString -Bytes $cipher))
-                )
+                    $encPartSeq = ConvertTo-Asn1Sequence -Children @(
+                        (ConvertTo-Asn1ContextExplicit -TagNumber 0 -InnerTlv (ConvertTo-Asn1Integer -Value 18))
+                        (ConvertTo-Asn1ContextExplicit -TagNumber 2 -InnerTlv (ConvertTo-Asn1OctetString -Bytes $cipher))
+                    )
 
-                $cname = ConvertTo-KerberosPrincipalName -NameType 10 -NameStrings @('user@test.local')
-                $ticket = ConvertTo-Asn1ApplicationConstructed -TagNumber 1 -InnerTlv (ConvertTo-Asn1Sequence -Children @((ConvertTo-Asn1Integer -Value 5)))
+                    $cname = ConvertTo-KerberosPrincipalName -NameType 10 -NameStrings @('user@test.local')
+                    $ticket = ConvertTo-Asn1ApplicationConstructed -TagNumber 1 -InnerTlv (ConvertTo-Asn1Sequence -Children @((ConvertTo-Asn1Integer -Value 5)))
 
-                $kdcRep = ConvertTo-Asn1Sequence -Children @(
-                    (ConvertTo-Asn1ContextExplicit -TagNumber 0 -InnerTlv (ConvertTo-Asn1Integer -Value 5))
-                    (ConvertTo-Asn1ContextExplicit -TagNumber 1 -InnerTlv (ConvertTo-Asn1Integer -Value 11))
-                    (ConvertTo-Asn1ContextExplicit -TagNumber 2 -InnerTlv (ConvertTo-Asn1Sequence -Children @($paPkAsRepPaData)))
-                    (ConvertTo-Asn1ContextExplicit -TagNumber 3 -InnerTlv (ConvertTo-Asn1GeneralString -Value 'TEST.LOCAL'))
-                    (ConvertTo-Asn1ContextExplicit -TagNumber 4 -InnerTlv $cname)
-                    (ConvertTo-Asn1ContextExplicit -TagNumber 5 -InnerTlv $ticket)
-                    (ConvertTo-Asn1ContextExplicit -TagNumber 6 -InnerTlv $encPartSeq)
-                )
+                    $kdcRep = ConvertTo-Asn1Sequence -Children @(
+                        (ConvertTo-Asn1ContextExplicit -TagNumber 0 -InnerTlv (ConvertTo-Asn1Integer -Value 5))
+                        (ConvertTo-Asn1ContextExplicit -TagNumber 1 -InnerTlv (ConvertTo-Asn1Integer -Value 11))
+                        (ConvertTo-Asn1ContextExplicit -TagNumber 2 -InnerTlv (ConvertTo-Asn1Sequence -Children @($paPkAsRepPaData)))
+                        (ConvertTo-Asn1ContextExplicit -TagNumber 3 -InnerTlv (ConvertTo-Asn1GeneralString -Value 'TEST.LOCAL'))
+                        (ConvertTo-Asn1ContextExplicit -TagNumber 4 -InnerTlv $cname)
+                        (ConvertTo-Asn1ContextExplicit -TagNumber 5 -InnerTlv $ticket)
+                        (ConvertTo-Asn1ContextExplicit -TagNumber 6 -InnerTlv $encPartSeq)
+                    )
 
-                ConvertTo-Asn1ApplicationConstructed -TagNumber 11 -InnerTlv $kdcRep
+                    ConvertTo-Asn1ApplicationConstructed -TagNumber 11 -InnerTlv $kdcRep
                 }
             }
         }
@@ -209,3 +233,4 @@ Describe 'Invoke-PkinitAuthentication' {
         }
     }
 }
+

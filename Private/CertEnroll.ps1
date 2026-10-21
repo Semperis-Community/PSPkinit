@@ -36,7 +36,8 @@
          don't allow enrollee-supplied SANs.
 #>
 
-function New-PkinitComObject {
+function New-PkinitComObject
+{
     <#
         .SYNOPSIS
         Thin seam around New-Object -ComObject, so every CertEnroll/CertificateAuthority
@@ -51,7 +52,8 @@ function New-PkinitComObject {
     return New-Object -ComObject $ProgId
 }
 
-function ConvertTo-PkinitAlternativeNameTypeCode {
+function ConvertTo-PkinitAlternativeNameTypeCode
+{
     <#
         .SYNOPSIS
         Maps a friendly SAN type name to its CERTENROLLLib AlternativeNameType code.
@@ -62,14 +64,16 @@ function ConvertTo-PkinitAlternativeNameTypeCode {
         [Parameter(Mandatory)] [ValidateSet('UserPrincipalName', 'Dns', 'Email')] [string] $SanType
     )
 
-    switch ($SanType) {
+    switch ($SanType)
+    {
         'UserPrincipalName' { return 11 } # XCN_CERT_ALT_NAME_USER_PRINCIPAL_NAME (otherName, OID 1.3.6.1.4.1.311.20.2.3)
         'Dns' { return 3 }              # XCN_CERT_ALT_NAME_DNS_NAME
         'Email' { return 2 }            # XCN_CERT_ALT_NAME_RFC822_NAME
     }
 }
 
-function ConvertTo-PkinitSanAttributeString {
+function ConvertTo-PkinitSanAttributeString
+{
     <#
         .SYNOPSIS
         Builds the "SAN:keyword=value" ICertRequest2::Submit request-attribute
@@ -86,7 +90,8 @@ function ConvertTo-PkinitSanAttributeString {
         [Parameter(Mandatory)] [string] $San
     )
 
-    $keyword = switch ($SanType) {
+    $keyword = switch ($SanType)
+    {
         'UserPrincipalName' { 'upn' }
         'Dns' { 'dns' }
         'Email' { 'email' }
@@ -95,7 +100,13 @@ function ConvertTo-PkinitSanAttributeString {
     return "SAN:$keyword=$San"
 }
 
-function ConvertTo-PkinitSidSecurityExtensionValue {
+<#
+    .SYNOPSIS
+    Builds the raw DER value of the SID security extension for a PKINIT certificate request.
+#>
+
+function ConvertTo-PkinitSidSecurityExtensionValue
+{
     <#
         .SYNOPSIS
         Builds the raw DER value of the SID security extension
@@ -153,7 +164,8 @@ function ConvertTo-PkinitSidSecurityExtensionValue {
     return ConvertTo-Asn1Sequence -Children @($otherName)
 }
 
-function New-PkinitSidSecurityExtension {
+function New-PkinitSidSecurityExtension
+{
     <#
         .SYNOPSIS
         Builds a CX509Extension COM object for the SID security extension
@@ -180,7 +192,8 @@ function New-PkinitSidSecurityExtension {
     return $extension
 }
 
-function New-PkinitCertificateSigningRequest {
+function New-PkinitCertificateSigningRequest
+{
     <#
         .SYNOPSIS
         Generates a private key and a PKCS#10 CSR (with a SAN extension embedded
@@ -235,7 +248,8 @@ function New-PkinitCertificateSigningRequest {
     $pkcs10Request.InitializeFromPrivateKey($enrollmentContext, $privateKey, '')
     $pkcs10Request.Subject = $distinguishedName
     $pkcs10Request.X509Extensions.Add($sanExtension)
-    if ($Sid) {
+    if ($Sid)
+    {
         $pkcs10Request.X509Extensions.Add((New-PkinitSidSecurityExtension -Sid $Sid))
     }
     $pkcs10Request.Encode()
@@ -246,11 +260,12 @@ function New-PkinitCertificateSigningRequest {
 
     return [PSCustomObject]@{
         Enrollment = $enrollment
-        Base64Csr  = $base64Csr
+        Base64Csr = $base64Csr
     }
 }
 
-function Submit-PkinitCertificateSigningRequest {
+function Submit-PkinitCertificateSigningRequest
+{
     <#
         .SYNOPSIS
         Submits a Base64 PKCS#10 CSR to a CA via the CertificateAuthority.Request
@@ -280,7 +295,8 @@ function Submit-PkinitCertificateSigningRequest {
     # 0xFF (CR_IN_ENCODEANY) lets the CA auto-detect the request encoding.
     $disposition = $certRequest.Submit(0xFF, $Base64Csr, $attributes, $CertificateAuthorityConfig)
 
-    if ($disposition -ne 3) {
+    if ($disposition -ne 3)
+    {
         # CR_DISP_ISSUED
         $message = $certRequest.GetDispositionMessage()
         throw "Certificate request was not issued (disposition $disposition): $message"
@@ -289,7 +305,8 @@ function Submit-PkinitCertificateSigningRequest {
     return $certRequest.GetCertificate(1) # CR_OUT_BASE64 (no header)
 }
 
-function Install-PkinitCertificateResponse {
+function Install-PkinitCertificateResponse
+{
     <#
         .SYNOPSIS
         Installs an issued certificate against the private key generated for it,
@@ -307,7 +324,8 @@ function Install-PkinitCertificateResponse {
     $Enrollment.InstallResponse(2, $Base64Certificate, 1, '')
 }
 
-function Get-PkinitCertificateFromStore {
+function Get-PkinitCertificateFromStore
+{
     <#
         .SYNOPSIS
         Finds a certificate (with its now-associated private key) in the
@@ -322,3 +340,4 @@ function Get-PkinitCertificateFromStore {
     $storePath = if ($MachineContext) { 'Cert:\LocalMachine\My' } else { 'Cert:\CurrentUser\My' }
     return Get-ChildItem -Path $storePath | Where-Object { $_.Thumbprint -eq $Thumbprint }
 }
+

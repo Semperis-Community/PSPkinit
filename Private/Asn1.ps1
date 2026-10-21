@@ -7,7 +7,8 @@
     complete inner TLV (tag+length+value) rather than replacing the universal tag.
 #>
 
-function Get-Asn1LengthBytes {
+function Get-Asn1LengthBytes
+{
     <#
         .SYNOPSIS
         DER length-of-length encoding for a given content length.
@@ -18,24 +19,28 @@ function Get-Asn1LengthBytes {
         [Parameter(Mandatory)] [int]$Length
     )
 
-    if ($Length -lt 0) {
+    if ($Length -lt 0)
+    {
         throw "Length cannot be negative: $Length"
     }
 
-    if ($Length -lt 0x80) {
+    if ($Length -lt 0x80)
+    {
         return [byte[]]@([byte]$Length)
     }
 
     $bytes = [System.Collections.Generic.List[byte]]::new()
     $remaining = $Length
-    while ($remaining -gt 0) {
+    while ($remaining -gt 0)
+    {
         $bytes.Insert(0, [byte]($remaining -band 0xff))
         $remaining = $remaining -shr 8
     }
     return [byte[]]@([byte](0x80 -bor $bytes.Count)) + $bytes.ToArray()
 }
 
-function New-Asn1Tlv {
+function New-Asn1Tlv
+{
     <#
         .SYNOPSIS
         Builds a single DER TLV (tag, length, value) from a raw tag byte and content.
@@ -51,7 +56,8 @@ function New-Asn1Tlv {
     return [byte[]]@($Tag) + $lengthBytes + $Content
 }
 
-function ConvertTo-Asn1Integer {
+function ConvertTo-Asn1Integer
+{
     <#
         .SYNOPSIS
         DER INTEGER encoding (tag 0x02) from a non-negative value, expressed as
@@ -65,8 +71,10 @@ function ConvertTo-Asn1Integer {
         [Parameter(Mandatory, ParameterSetName = 'Bytes')] [byte[]]$Bytes
     )
 
-    if ($PSCmdlet.ParameterSetName -eq 'Int64') {
-        if ($Value -lt 0) {
+    if ($PSCmdlet.ParameterSetName -eq 'Int64')
+    {
+        if ($Value -lt 0)
+        {
             throw "ConvertTo-Asn1Integer only supports non-negative Int64 values; got $Value."
         }
         $Bytes = [System.Numerics.BigInteger]::new($Value).ToByteArray()
@@ -74,21 +82,49 @@ function ConvertTo-Asn1Integer {
         # BigInteger.ToByteArray() is little-endian and already includes a sign byte
         # when needed; after reversing to big-endian, strip any redundant leading
         # 0x00 bytes beyond the one needed to keep the value non-negative.
-        while ($Bytes.Length -gt 1 -and $Bytes[0] -eq 0 -and $Bytes[1] -lt 0x80) {
+        while ($Bytes.Length -gt 1 -and $Bytes[0] -eq 0 -and $Bytes[1] -lt 0x80)
+        {
             $Bytes = $Bytes[1..($Bytes.Length - 1)]
         }
     }
 
-    if ($Bytes.Length -eq 0) {
+    if ($Bytes.Length -eq 0)
+    {
         $Bytes = [byte[]]@(0)
-    } elseif ($Bytes[0] -ge 0x80) {
+    }
+    elseif ($Bytes[0] -ge 0x80)
+    {
         $Bytes = [byte[]]@(0) + $Bytes
     }
 
     return New-Asn1Tlv -Tag 0x02 -Content $Bytes
 }
 
-function ConvertTo-Asn1OctetString {
+function ConvertTo-Asn1OctetString
+{
+    <#
+        .SYNOPSIS
+        Wraps bytes in an ASN.1 OCTET STRING.
+
+        .DESCRIPTION
+        Adds the tag and length required by Distinguished Encoding Rules (DER).
+        Your bytes stay unchanged. An empty array produces an empty OCTET STRING.
+
+        .PARAMETER Bytes
+        The bytes to wrap. An empty array is allowed.
+
+        .EXAMPLE
+        ConvertTo-Asn1OctetString -Bytes ([byte[]](0x41, 0x42))
+
+        Returns the encoded bytes 04 02 41 42.
+
+        .OUTPUTS
+        System.Byte[]
+        The complete encoded OCTET STRING, including its tag and length.
+
+        .NOTES
+        Internal ASN.1 helper. This wraps data; it doesn't encrypt it.
+    #>
     [CmdletBinding()]
     [OutputType([byte[]])]
     param(
@@ -98,7 +134,8 @@ function ConvertTo-Asn1OctetString {
     return New-Asn1Tlv -Tag 0x04 -Content $Bytes
 }
 
-function ConvertTo-Asn1BitString {
+function ConvertTo-Asn1BitString
+{
     <#
         .SYNOPSIS
         DER BIT STRING encoding (tag 0x03). Content is prefixed with a single
@@ -115,7 +152,31 @@ function ConvertTo-Asn1BitString {
     return New-Asn1Tlv -Tag 0x03 -Content ([byte[]]@($UnusedBits) + $Bytes)
 }
 
-function ConvertTo-Asn1GeneralString {
+function ConvertTo-Asn1GeneralString
+{
+    <#
+        .SYNOPSIS
+        Encodes text as an ASN.1 GeneralString.
+
+        .DESCRIPTION
+        Converts your text to ASCII bytes, then adds the GeneralString tag and
+        length. This is the string encoding used for Kerberos names and realms.
+
+        .PARAMETER Value
+        The text to encode. Use ASCII characters; this isn't a UTF-8 encoder.
+
+        .EXAMPLE
+        ConvertTo-Asn1GeneralString -Value 'TEST.LOCAL'
+
+        Encodes a Kerberos realm as a complete GeneralString value.
+
+        .OUTPUTS
+        System.Byte[]
+        The encoded GeneralString, including its tag and length.
+
+        .NOTES
+        Internal ASN.1 helper. Characters outside ASCII use ASCII's fallback.
+    #>
     [CmdletBinding()]
     [OutputType([byte[]])]
     param(
@@ -125,7 +186,8 @@ function ConvertTo-Asn1GeneralString {
     return New-Asn1Tlv -Tag 0x1B -Content ([System.Text.Encoding]::ASCII.GetBytes($Value))
 }
 
-function ConvertTo-Asn1GeneralizedTime {
+function ConvertTo-Asn1GeneralizedTime
+{
     <#
         .SYNOPSIS
         KerberosTime encoding: GeneralizedTime with no fractional seconds, UTC ("Z").
@@ -141,7 +203,8 @@ function ConvertTo-Asn1GeneralizedTime {
     return New-Asn1Tlv -Tag 0x18 -Content ([System.Text.Encoding]::ASCII.GetBytes($text))
 }
 
-function ConvertTo-Asn1Oid {
+function ConvertTo-Asn1Oid
+{
     <#
         .SYNOPSIS
         DER OBJECT IDENTIFIER encoding (tag 0x06) from dotted-decimal notation.
@@ -153,19 +216,22 @@ function ConvertTo-Asn1Oid {
     )
 
     $arcs = $Dotted.Split('.') | ForEach-Object { [long]$_ }
-    if ($arcs.Count -lt 2) {
+    if ($arcs.Count -lt 2)
+    {
         throw "OID must have at least two arcs: $Dotted"
     }
 
     $content = [System.Collections.Generic.List[byte]]::new()
     $content.Add([byte](($arcs[0] * 40) + $arcs[1]))
 
-    for ($i = 2; $i -lt $arcs.Count; $i++) {
+    for ($i = 2; $i -lt $arcs.Count; $i++)
+    {
         $arc = [long]$arcs[$i]
         $arcBytes = [System.Collections.Generic.List[byte]]::new()
         $arcBytes.Add([byte]($arc -band 0x7f))
         $arc = $arc -shr 7
-        while ($arc -gt 0) {
+        while ($arc -gt 0)
+        {
             $arcBytes.Insert(0, [byte](0x80 -bor ($arc -band 0x7f)))
             $arc = $arc -shr 7
         }
@@ -175,7 +241,8 @@ function ConvertTo-Asn1Oid {
     return New-Asn1Tlv -Tag 0x06 -Content $content.ToArray()
 }
 
-function ConvertTo-Asn1Sequence {
+function ConvertTo-Asn1Sequence
+{
     <#
         .SYNOPSIS
         Wraps a set of already-encoded child TLVs in a DER SEQUENCE (tag 0x30).
@@ -187,15 +254,18 @@ function ConvertTo-Asn1Sequence {
     )
 
     $content = [System.Collections.Generic.List[byte]]::new()
-    foreach ($child in $Children) {
-        if ($null -ne $child -and $child.Length -gt 0) {
+    foreach ($child in $Children)
+    {
+        if ($null -ne $child -and $child.Length -gt 0)
+        {
             $content.AddRange($child)
         }
     }
     return New-Asn1Tlv -Tag 0x30 -Content $content.ToArray()
 }
 
-function ConvertTo-Asn1ContextExplicit {
+function ConvertTo-Asn1ContextExplicit
+{
     <#
         .SYNOPSIS
         Wraps an already-encoded inner TLV in an EXPLICIT context-specific
@@ -211,7 +281,8 @@ function ConvertTo-Asn1ContextExplicit {
     return New-Asn1Tlv -Tag ([byte](0xA0 -bor $TagNumber)) -Content $InnerTlv
 }
 
-function ConvertTo-Asn1ContextImplicitPrimitive {
+function ConvertTo-Asn1ContextImplicitPrimitive
+{
     <#
         .SYNOPSIS
         Encodes content under an IMPLICIT primitive context-specific tag ([N] IMPLICIT
@@ -227,7 +298,8 @@ function ConvertTo-Asn1ContextImplicitPrimitive {
     return New-Asn1Tlv -Tag ([byte](0x80 -bor $TagNumber)) -Content $Content
 }
 
-function ConvertTo-Asn1ApplicationConstructed {
+function ConvertTo-Asn1ApplicationConstructed
+{
     <#
         .SYNOPSIS
         Wraps an already-encoded inner TLV (typically a SEQUENCE) in an
@@ -243,7 +315,8 @@ function ConvertTo-Asn1ApplicationConstructed {
     return New-Asn1Tlv -Tag ([byte](0x60 -bor $TagNumber)) -Content $InnerTlv
 }
 
-function Read-Asn1Tlv {
+function Read-Asn1Tlv
+{
     <#
         .SYNOPSIS
         Reads a single DER TLV from a byte array starting at Offset, returning the
@@ -260,46 +333,55 @@ function Read-Asn1Tlv {
         [Parameter(Mandatory)] [int]$Offset
     )
 
-    if ($Offset -ge $Bytes.Length) {
+    if ($Offset -ge $Bytes.Length)
+    {
         throw "Read-Asn1Tlv: offset $Offset is at or past end of buffer (length $($Bytes.Length))."
     }
 
     $tag = $Bytes[$Offset]
-    if (($tag -band 0x1f) -eq 0x1f) {
+    if (($tag -band 0x1f) -eq 0x1f)
+    {
         throw 'Read-Asn1Tlv: multi-byte (high) tag numbers are not supported.'
     }
     $pos = $Offset + 1
 
     $lengthByte = $Bytes[$pos]
     $pos++
-    if ($lengthByte -lt 0x80) {
+    if ($lengthByte -lt 0x80)
+    {
         $length = [int]$lengthByte
-    } else {
+    }
+    else
+    {
         $numLengthBytes = $lengthByte -band 0x7f
-        if ($numLengthBytes -eq 0) {
+        if ($numLengthBytes -eq 0)
+        {
             throw 'Read-Asn1Tlv: indefinite-length DER encodings are not supported.'
         }
         $length = 0
-        for ($i = 0; $i -lt $numLengthBytes; $i++) {
+        for ($i = 0; $i -lt $numLengthBytes; $i++)
+        {
             $length = ($length -shl 8) -bor $Bytes[$pos]
             $pos++
         }
     }
 
-    if ($pos + $length -gt $Bytes.Length) {
+    if ($pos + $length -gt $Bytes.Length)
+    {
         throw "Read-Asn1Tlv: declared length $length at offset $pos exceeds buffer length $($Bytes.Length)."
     }
 
     $content = if ($length -eq 0) { [byte[]]@() } else { $Bytes[$pos..($pos + $length - 1)] }
 
     return [PSCustomObject]@{
-        Tag        = $tag
-        Content    = $content
+        Tag = $tag
+        Content = $content
         NextOffset = $pos + $length
     }
 }
 
-function Read-Asn1Sequence {
+function Read-Asn1Sequence
+{
     <#
         .SYNOPSIS
         Parses the content of a SEQUENCE (or SEQUENCE OF) TLV into a list of its
@@ -315,7 +397,8 @@ function Read-Asn1Sequence {
 
     $children = [System.Collections.Generic.List[object]]::new()
     $offset = 0
-    while ($offset -lt $Content.Length) {
+    while ($offset -lt $Content.Length)
+    {
         $tlv = Read-Asn1Tlv -Bytes $Content -Offset $offset
         $children.Add($tlv)
         $offset = $tlv.NextOffset
@@ -323,7 +406,8 @@ function Read-Asn1Sequence {
     return $children.ToArray()
 }
 
-function ConvertFrom-Asn1Integer {
+function ConvertFrom-Asn1Integer
+{
     <#
         .SYNOPSIS
         Decodes DER INTEGER content bytes (big-endian two's complement) to a
@@ -341,7 +425,31 @@ function ConvertFrom-Asn1Integer {
     return [long]$big
 }
 
-function ConvertFrom-Asn1GeneralizedTime {
+function ConvertFrom-Asn1GeneralizedTime
+{
+    <#
+        .SYNOPSIS
+        Decodes a Kerberos timestamp into a UTC DateTime.
+
+        .DESCRIPTION
+        Reads ASCII text in yyyyMMddHHmmssZ format. Pass the content bytes,
+        not the ASN.1 tag or length. Fractional seconds aren't supported.
+
+        .PARAMETER Content
+        The GeneralizedTime content bytes returned by Read-Asn1Tlv.
+
+        .EXAMPLE
+        ConvertFrom-Asn1GeneralizedTime -Content ([System.Text.Encoding]::ASCII.GetBytes('20261016090000Z'))
+
+        Returns October 16, 2026 at 09:00:00 UTC.
+
+        .OUTPUTS
+        System.DateTime
+        The decoded time with its Kind set to Utc.
+
+        .NOTES
+        Internal ASN.1 helper. Invalid timestamp text causes a parsing error.
+    #>
     [CmdletBinding()]
     [OutputType([datetime])]
     param(
@@ -352,7 +460,12 @@ function ConvertFrom-Asn1GeneralizedTime {
     return [datetime]::ParseExact($text, 'yyyyMMddHHmmss\Z', [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal)
 }
 
-function ConvertFrom-Asn1GeneralString {
+function ConvertFrom-Asn1GeneralString
+{
+    <#
+        .SYNOPSIS
+        Decodes ASN.1 GeneralString content from DER bytes into a plain string.
+    #>
     [CmdletBinding()]
     [OutputType([string])]
     param(
@@ -361,3 +474,4 @@ function ConvertFrom-Asn1GeneralString {
 
     return [System.Text.Encoding]::ASCII.GetString($Content)
 }
+

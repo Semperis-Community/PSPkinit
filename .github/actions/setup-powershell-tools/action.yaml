@@ -92,7 +92,7 @@ runs:
             $failedModules += $mod.Name
             $logLine = "[$(Get-Date -Format o)] Module: $($mod.Name) | Error: $($_.Exception.Message)"
             Add-Content -Path $logFile -Value $logLine
-            Write-Error "Failed to install module '$($mod.Name)'. Logged to $logFile" -ErrorAction Continue
+            Write-Error "Failed to install module '$($mod.Name)'. Logged to $logFile"
           }
         }
 

@@ -1,0 +1,51 @@
+{
+  "description": "Repository structure validation configuration. Can be extended or overridden via REPO_STRUCTURE_VALIDATION_CONFIG repository variable. NOTE: Scheduled runs automatically discover all private/internal repositories from the organization - this config is used only for manual workflow dispatch.",
+  "scheduledRunBehavior": "Automatic organization repository discovery - validates all private/internal repos without manual configuration",
+  "validationMode": "multiple-repos",
+  "validationModeNote": "Used only for manual dispatch. Set to 'multiple-repos' (default) for multi-repo validation, or 'current-repo' to validate only this repository. Ignored for scheduled runs. Use target-repositories workflow input to specify repos.",
+  "requiredDirectories": [
+    "docs",
+    "pipeline-config/ref",
+    "pipeline-config/sample"
+  ],
+  "requiredFiles": [
+    ".github/workflows/ci-core.yaml",
+    ".github/workflows/release.yaml",
+    ".github/workflows/incident.yaml",
+    ".cspell.json",
+    ".markdownlint.json",
+    ".github/release.yml",
+    "pipeline-config/ref/pkg-dependencies.yaml",
+    "pipeline-config/ref/test-dependencies.yaml",
+    "pipeline-config/ref/incidents.yaml",
+    "pipeline-config/ref/notify.yaml",
+    "pipeline-config/ref/pipeline.yaml",
+    "pipeline-config/ref/publish-targets.yaml",
+    "pipeline-config/ref/release-package-exclusions.yaml",
+    "pipeline-config/sample/pkg-dependencies.yaml",
+    "pipeline-config/sample/test-dependencies.yaml",
+    "pipeline-config/sample/incidents.yaml",
+    "pipeline-config/sample/notify.yaml",
+    "pipeline-config/sample/pipeline.yaml",
+    "pipeline-config/sample/publish-targets.yaml",
+    "pipeline-config/sample/release-package-exclusions.yaml",
+    "CHANGELOG.md"
+  ],
+  "configPairsRequiringConsistency": [
+    "test-dependencies",
+    "incidents",
+    "notify",
+    "pipeline",
+    "publish-targets",
+    "release-package-exclusions"
+  ],
+  "configPairsWithCommentVariance": [
+    "pkg-dependencies"
+  ],
+  "comments": {
+    "validationMode": "Determine whether to validate only the current repo or a list of repos",
+    "repositoriesToValidate": "Array of repositories in owner/repo format to validate",
+    "configPairsRequiringConsistency": "These config pairs must match exactly between ref and sample directories",
+    "configPairsWithCommentVariance": "These config pairs may have variance in comments and examples, but core structure must match"
+  }
+}

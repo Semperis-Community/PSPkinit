@@ -1,22 +1,214 @@
-name: CI PowerShell Wrapper
+name: CI PowerShell
 
 on:
   workflow_call:
     inputs:
-      ref:
-        description: Git ref to check out.
-        type: string
-        required: true
       dependency-file:
         description: Path to the dependency reference file.
         type: string
         default: pipeline-config/ref/test-dependencies.yaml
 
 jobs:
-  ci-powershell:
-    if: ${{ vars.PIPELINE_ENABLED == 'true' }}
-    uses: Semperis-Community/.github/.github/workflows/ci-powershell-reusable.yaml@v1.0.0
-    with:
-      ref: ${{ inputs.ref }}
-      dependency-file: ${{ inputs['dependency-file'] }}
-    secrets: inherit
+  detect:
+    runs-on: windows-2022
+    outputs:
+      has_project: ${{ steps.detect.outputs.has_project }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Detect PowerShell project content
+        id: detect
+        shell: pwsh
+        run: |
+          $hasProject = @(Get-ChildItem -Path . -Recurse -File -Include *.ps1,*.psm1,*.psd1 -ErrorAction SilentlyContinue).Count -gt 0
+          "has_project=$($hasProject.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+  help-check:
+    needs: detect
+    if: needs.detect.outputs.has_project == 'true'
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Setup PowerShell tools
+        uses: ./.github/actions/setup-powershell-tools
+        with:
+          modules: PSScriptAnalyzer,Pester
+          dependency-file: ${{ inputs.dependency-file }}
+
+      - name: Validate PowerShell script and cmdlet help
+        shell: pwsh
+        run: |
+          ./.github/internal/scripts/Validate-PowerShellHelp.ps1 -Root .
+
+  format-check:
+    needs: detect
+    if: needs.detect.outputs.has_project == 'true'
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Setup PowerShell tools
+        uses: ./.github/actions/setup-powershell-tools
+        with:
+          modules: PSScriptAnalyzer,Pester
+          dependency-file: ${{ inputs.dependency-file }}
+
+      - name: Enforce PowerShell formatting
+        shell: pwsh
+        run: |
+          $formatRules = @(
+            "PSUseConsistentIndentation"
+            "PSPlaceOpenBrace"
+            "PSPlaceCloseBrace"
+            "PSUseConsistentWhitespace"
+          )
+
+          $results = Invoke-ScriptAnalyzer -Path . -Recurse -Settings ./.github/powershell-formatting.psd1 -IncludeRule $formatRules
+          if ($results) {
+            $results | Select-Object RuleName, Severity, ScriptName, Line, Message | Format-Table -AutoSize
+            throw "PowerShell formatting violations detected."
+          }
+
+  analysis-check:
+    needs: detect
+    if: needs.detect.outputs.has_project == 'true'
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Setup PowerShell tools
+        uses: ./.github/actions/setup-powershell-tools
+        with:
+          modules: PSScriptAnalyzer,Pester
+          dependency-file: ${{ inputs.dependency-file }}
+
+      - name: Lint with PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          $results = Invoke-ScriptAnalyzer -Path . -Recurse -Severity Error
+          if ($results) {
+            $results | Format-Table -AutoSize
+            throw "PSScriptAnalyzer found errors."
+          }
+
+  test:
+    needs: detect
+    if: needs.detect.outputs.has_project == 'true'
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Setup PowerShell tools
+        uses: ./.github/actions/setup-powershell-tools
+        with:
+          modules: PSScriptAnalyzer,Pester
+          dependency-file: ${{ inputs.dependency-file }}
+
+      - name: Verify Pester 5 is installed
+        shell: pwsh
+        run: |
+          $pesterModule = Get-Module -ListAvailable Pester |
+            Sort-Object Version -Descending |
+            Select-Object -First 1
+
+          if ($null -eq $pesterModule) {
+            throw "Pester module was not found after setup-powershell-tools."
+          }
+
+          if ($pesterModule.Version.Major -ne 5) {
+            throw "Pester 5 is required. Detected version: $($pesterModule.Version)."
+          }
+
+          Write-Host "Using Pester version $($pesterModule.Version)."
+
+      - name: Run Pester tests
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "./Tests")) {
+            Write-Host "No ./Tests folder found, skipping Pester."
+            exit 0
+          }
+
+          $config = New-PesterConfiguration
+          $config.Run.Path = "./Tests"
+          $config.TestResult.Enabled = $true
+          $config.TestResult.OutputPath = "test-results.xml"
+          Invoke-Pester -Configuration $config
+
+      - name: Upload test results
+        if: always() && hashFiles('test-results.xml') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: pester-results
+          path: test-results.xml
+
+  no-project:
+    needs: detect
+    if: needs.detect.outputs.has_project != 'true'
+    runs-on: windows-2022
+
+    steps:
+      - name: Skip validation for missing PowerShell project content
+        shell: pwsh
+        run: |
+          Write-Host "No PowerShell source files found. Skipping PowerShell validation."
+
+  validation-summary:
+    needs:
+      - detect
+      - help-check
+      - format-check
+      - analysis-check
+      - test
+      - no-project
+    if: always()
+    runs-on: windows-2022
+
+    steps:
+      - name: Summarize validation status
+        shell: pwsh
+        run: |
+          $results = @(
+            @{ Name = 'detect'; Result = '${{ needs.detect.result }}' },
+            @{ Name = 'help-check'; Result = '${{ needs.help-check.result }}' },
+            @{ Name = 'format-check'; Result = '${{ needs.format-check.result }}' },
+            @{ Name = 'analysis-check'; Result = '${{ needs.analysis-check.result }}' },
+            @{ Name = 'test'; Result = '${{ needs.test.result }}' },
+            @{ Name = 'no-project'; Result = '${{ needs.no-project.result }}' }
+          )
+
+          $results | Format-Table -AutoSize
+
+          $failed = $results | Where-Object { $_.Result -in @('failure', 'cancelled') }
+          if ($failed.Count -gt 0) {
+            throw "One or more PowerShell validation jobs failed: $($failed.Name -join ', ')."
+          }
+
+          $skipped = $results | Where-Object { $_.Result -eq 'skipped' }
+          if ($skipped.Count -eq $results.Count) {
+            Write-Host "No PowerShell project content was detected; all validation steps were skipped."
+            exit 0
+          }
+
+          Write-Host "All PowerShell validation jobs succeeded or were intentionally skipped."
+
