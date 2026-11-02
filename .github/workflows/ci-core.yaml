@@ -486,7 +486,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: latest
+          node-version: '24'
 
       - name: Run cspell
         if: github.event_name == 'pull_request'
@@ -532,7 +532,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: latest
+          node-version: '24'
 
       - name: Run markdownlint
         if: github.event_name == 'pull_request'
@@ -1114,7 +1114,7 @@ jobs:
       - name: Setup Node.js 24
         uses: actions/setup-node@v5
         with:
-          node-version: latest
+          node-version: '24'
 
       # Create output folder for packaged artifact.
       - name: Create build output directory

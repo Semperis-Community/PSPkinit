@@ -6,6 +6,18 @@ All notable changes to this project will be documented in this file.
 
 Deduplicated historical PR records, newest first, with key details retained.
 
+### PR #7 - Upgrade reusable pipeline to v1.3.0
+
+- Source PR: #7
+- Base branch: dev
+- Head branch: pipeline-upgrade
+- Details:
+  - Upgrade the reusable pipeline to v1.3.0 for improved release automation and updated pipeline configuration.
+  - Refresh shared PowerShell tooling and release/signing scripts, including their integrity hashes.
+  - Replace the changelog workflow with the updated release workflow and release configuration.
+  - Update reference and sample pipeline configuration for current native build and packaging behavior.
+  - No PSPkinit module source changes are included.
+
 ### PR #5 - docs(help): fix nine function help validation failures
 
 - Source PR: #5
