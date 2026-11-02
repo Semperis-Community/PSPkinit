@@ -134,15 +134,6 @@ versioningPolicy:
     labelOverrides:
       patch:
         - release:patch
-    # Applied only when no labelOverrides label is present on the merged PR.
-    inferredLabelOverrides:
-      minor:
-        - feature
-        - enhancement
-      patch:
-        - bug
-        - error
-        - documentation
 
 # Patterns to detect the release stage from the tag name.
 # Evaluated in order; first match wins. No match defaults to "production".
