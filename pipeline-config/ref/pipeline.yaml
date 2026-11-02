@@ -109,6 +109,15 @@ versioningPolicy:
         - release:minor
       patch:
         - release:patch
+    # Applied only when no labelOverrides label is present on the merged PR.
+    inferredLabelOverrides:
+      minor:
+        - feature
+        - enhancement
+      patch:
+        - bug
+        - error
+        - documentation
 
   # Calendar versioning configuration (used when method: calver)
   # Versions follow format: YYYY.MM.DD.PATCH (e.g., 2026.06.10.0, 2026.06.10.1)
