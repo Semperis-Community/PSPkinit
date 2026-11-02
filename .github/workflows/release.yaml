@@ -1592,7 +1592,7 @@ jobs:
       - name: Setup Node.js 24
         uses: actions/setup-node@v5
         with:
-          node-version: latest
+          node-version: '24'
 
       - name: Setup PowerShell tools
         uses: ./.github/actions/setup-powershell-tools
