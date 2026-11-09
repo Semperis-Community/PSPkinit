@@ -6,6 +6,28 @@ All notable changes to this project will be documented in this file.
 
 Deduplicated historical PR records, newest first, with key details retained.
 
+### PR #11 - Add standard repository community files
+
+- Source PR: #11
+- Base branch: dev
+- Head branch: chore/github-root-files
+- Details:
+  - Add root-level community guidance for contributing, security reporting, support requests, and expected conduct.
+  - The files reflect the project’s current Pester test command, Windows PowerShell compatibility, available GitHub Issues channel, and private handling of sensitive PKINIT data and vulnerability reports.
+  - File diagnostics reported no errors for the added Markdown files.
+
+### PR #9 - Temporarily disable code signing
+
+- Source PR: #9
+- Base branch: dev
+- Head branch: fix/disable-code-signing
+- Details:
+  - Disable code signing in the active release configuration while centralized Azure federated login is addressed.
+  - Setting `enabled: false` causes the release workflow signing gate to skip Azure OIDC login, Key Vault certificate retrieval, and signing steps. Release packaging and publishing remain unaffected.
+  - Related tracking: [pipeline-build issue #255](https://github.com/Semperis-Community/pipeline-build/issues/255).
+  - Parsed `pipeline-config/ref/signing.yaml` and confirmed `enabled` is Boolean `false`.
+  - `git diff --check` passed.
+
 ### PR #7 - Upgrade reusable pipeline to v1.3.0
 
 - Source PR: #7

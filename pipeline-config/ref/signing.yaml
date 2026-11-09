@@ -14,7 +14,7 @@
 # Setting enabled: true without completing step 1 causes the release job to
 # fail with AADSTS700213 (no matching federated identity record).
 
-enabled: true
+enabled: false
 
 hashAlgorithm: SHA256
 
