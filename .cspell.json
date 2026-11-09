@@ -80,6 +80,7 @@
     "specialised",
     "spki",
     "strs",
-    "xored"
+    "xored",
+    "unredacted"
   ]
 }
