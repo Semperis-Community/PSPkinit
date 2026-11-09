@@ -6,6 +6,16 @@ All notable changes to this project will be documented in this file.
 
 Deduplicated historical PR records, newest first, with key details retained.
 
+### PR #11 - Add standard repository community files
+
+- Source PR: #11
+- Base branch: dev
+- Head branch: chore/github-root-files
+- Details:
+  - Add root-level community guidance for contributing, security reporting, support requests, and expected conduct.
+  - The files reflect the project’s current Pester test command, Windows PowerShell compatibility, available GitHub Issues channel, and private handling of sensitive PKINIT data and vulnerability reports.
+  - File diagnostics reported no errors for the added Markdown files.
+
 ### PR #9 - Temporarily disable code signing
 
 - Source PR: #9
