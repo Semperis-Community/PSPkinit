@@ -1460,10 +1460,23 @@ jobs:
         run: |
           $hasPowerShell = @((Get-ChildItem -Path . -Recurse -File -Include *.ps1,*.psm1,*.psd1 -ErrorAction SilentlyContinue)).Count -gt 0
           $hasDotNet = @((Get-ChildItem -Path . -Recurse -File -Include *.sln,*.csproj -ErrorAction SilentlyContinue)).Count -gt 0
-          $hasPython = @((Get-ChildItem -Path . -Recurse -File -Include *.py -ErrorAction SilentlyContinue)).Count -gt 0
+          $hasDotNetSources = $hasDotNet
+          $hasPython = @((Get-ChildItem -Path . -Recurse -File -Include *.py,*.pyw -ErrorAction SilentlyContinue)).Count -gt 0
+          if (-not (Get-Command ConvertFrom-Yaml -ErrorAction SilentlyContinue)) {
+            Install-Module -Name powershell-yaml -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+            Import-Module powershell-yaml -ErrorAction Stop
+          }
+          $pipelineConfig = Get-Content -LiteralPath $env:PIPELINE_CONFIG_FILE -Raw -ErrorAction Stop | ConvertFrom-Yaml -ErrorAction Stop
+          if ($null -ne $pipelineConfig.dotnetNativeExe.enabled) {
+            $hasDotNet = [Convert]::ToBoolean($pipelineConfig.dotnetNativeExe.enabled) -or $hasDotNet
+          }
+          if ($null -ne $pipelineConfig.pythonNativeExe.enabled) {
+            $hasPython = [Convert]::ToBoolean($pipelineConfig.pythonNativeExe.enabled) -or $hasPython
+          }
 
           "has_powershell=$hasPowerShell" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "has_dotnet=$hasDotNet" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "has_dotnet_sources=$hasDotNetSources" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "has_python=$hasPython" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Summarize effective release configuration
@@ -1579,7 +1592,7 @@ jobs:
       - name: Setup Node.js 24
         uses: actions/setup-node@v5
         with:
-          node-version: latest
+          node-version: '24'
 
       - name: Setup PowerShell tools
         uses: ./.github/actions/setup-powershell-tools
@@ -1591,14 +1604,15 @@ jobs:
         uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '9.0.x'
-          cache: true
+          cache: ${{ hashFiles('**/packages.lock.json') != '' }}
+          cache-dependency-path: '**/packages.lock.json'
 
       - name: Setup Python
         if: steps.detect.outputs.has_python == 'True'
         uses: actions/setup-python@v6
         with:
           python-version: '3.13'
-          cache: pip
+          cache: ${{ hashFiles('**/requirements.txt', '**/pyproject.toml') != '' && 'pip' || '' }}
 
       - name: Resolve dependency repositories from config
         id: dependency_repos
@@ -1844,7 +1858,7 @@ jobs:
           }
 
       - name: Build and test .NET
-        if: steps.detect.outputs.has_dotnet == 'True'
+        if: steps.detect.outputs.has_dotnet_sources == 'True'
         shell: pwsh
         run: |
           dotnet restore
@@ -1852,7 +1866,7 @@ jobs:
           dotnet test --configuration Release --no-build
 
       - name: Publish .NET outputs
-        if: steps.detect.outputs.has_dotnet == 'True'
+        if: steps.detect.outputs.has_dotnet_sources == 'True'
         shell: pwsh
         run: |
           $projects = Get-ChildItem -Path . -Recurse -File -Filter *.csproj
@@ -1929,7 +1943,7 @@ jobs:
         if: steps.detect.outputs.has_python == 'True'
         shell: pwsh
         run: |
-          if (Test-Path "pytest.ini" -or Test-Path "pyproject.toml" -or Test-Path "tests") {
+          if ((Test-Path "pytest.ini") -or (Test-Path "pyproject.toml") -or (Test-Path "tests")) {
             pytest
           }
           else {
@@ -1940,7 +1954,7 @@ jobs:
         if: steps.detect.outputs.has_python == 'True'
         shell: pwsh
         run: |
-          if (Test-Path "pyproject.toml" -or Test-Path "setup.py") {
+          if ((Test-Path "pyproject.toml") -or (Test-Path "setup.py")) {
             python -m build
             New-Item -ItemType Directory -Path out/python -Force | Out-Null
             Copy-Item -Path dist/* -Destination out/python -Force
@@ -1948,6 +1962,348 @@ jobs:
           else {
             Write-Host "No Python build metadata found, skipping distribution build."
           }
+
+      - name: Build optional application bundles
+        # cspell:ignore pyinstaller noconfirm
+        if: steps.detect.outputs.has_dotnet == 'True' || steps.detect.outputs.has_python == 'True'
+        shell: pwsh
+        env:
+          BUILD_HAS_DOTNET: ${{ steps.detect.outputs.has_dotnet }}
+          BUILD_HAS_PYTHON: ${{ steps.detect.outputs.has_python }}
+        run: |
+          function Invoke-NativeBuild
+          {
+              <#
+            .SYNOPSIS
+            Builds a Python or .NET application bundle.
+
+            .DESCRIPTION
+            Preserves entry-script and configuration-driven publishing, or uses an explicitly
+            selected repository-owned PyInstaller spec or filesystem publish profile.
+            Custom builds retain their full bundle and verify expected relative output paths.
+
+            .PARAMETER Language
+            Application language: python or dotnet.
+
+            .PARAMETER ConfigPath
+            Path to pipeline.yaml.
+
+            .PARAMETER WorkspaceRoot
+            Repository checkout containing all configured inputs.
+
+            .PARAMETER TempRoot
+            Parent directory for isolated build output.
+            #>
+              [CmdletBinding()]
+              param(
+                  [Parameter(Mandatory)]
+                  [ValidateSet('python', 'dotnet')]
+                  [string]$Language,
+                  [string]$ConfigPath = $env:PIPELINE_CONFIG_FILE,
+                  [string]$WorkspaceRoot = (Get-Location).Path,
+                  [string]$TempRoot = $env:RUNNER_TEMP
+              )
+
+              $ErrorActionPreference = 'Stop'
+
+              function Resolve-BuildPath
+              {
+                  param([string]$Root, [string]$RelativePath, [switch]$MustExist)
+
+                  if ([string]::IsNullOrWhiteSpace($RelativePath) -or
+                      [IO.Path]::IsPathRooted($RelativePath) -or
+                      $RelativePath -match '(^|[\\/])\.\.([\\/]|$)|[:*?]')
+                  {
+                      throw "Build paths must be repository-relative without traversal or wildcards: '$RelativePath'."
+                  }
+                  $rootPath = [IO.Path]::GetFullPath($Root).TrimEnd('\', '/')
+                  $path = [IO.Path]::GetFullPath((Join-Path $rootPath $RelativePath))
+                  if (-not $path.StartsWith("$rootPath$([IO.Path]::DirectorySeparatorChar)", [StringComparison]::OrdinalIgnoreCase))
+                  {
+                      throw "Build path escapes its root: '$RelativePath'."
+                  }
+                  $current = $path
+                  while ($current -ne $rootPath)
+                  {
+                      if (Test-Path -LiteralPath $current)
+                      {
+                          $item = Get-Item -LiteralPath $current -Force
+                          if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)
+                          {
+                              throw "Build paths cannot traverse symbolic links or junctions: '$RelativePath'."
+                          }
+                      }
+                      $current = Split-Path -Path $current -Parent
+                  }
+                  if ($MustExist -and -not (Test-Path -LiteralPath $path -PathType Leaf))
+                  {
+                      throw "Configured build input does not exist: '$RelativePath'."
+                  }
+                  return $path
+              }
+
+              function Assert-NoBuildOverrides
+              {
+                  param($Config, [string[]]$Properties)
+
+                  foreach ($property in $Properties)
+                  {
+                      if ($Config.Contains($property) -and $null -ne $Config[$property] -and
+                          -not [string]::IsNullOrWhiteSpace([string]$Config[$property]))
+                      {
+                          throw "$Language custom build mode owns '$property'; remove it from pipeline configuration."
+                      }
+                  }
+                  if ($null -ne $Config.additionalArgs -and @($Config.additionalArgs).Count -gt 0)
+                  {
+                      throw "$Language custom build mode does not accept additionalArgs; configure the spec/profile instead."
+                  }
+              }
+
+              Import-Module powershell-yaml -ErrorAction Stop
+              $pipeline = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Yaml -ErrorAction Stop
+              $config = $pipeline["${Language}NativeExe"]
+              if ($null -eq $config -or -not [Convert]::ToBoolean($config.enabled))
+              {
+                  Write-Output "$Language native executable generation is disabled."
+                  return
+              }
+
+              $workspace = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
+              $custom = $false
+              $inputPath = $null
+              $nativeName = [string]$config.name
+              $singleFile = $true
+              $buildArgs = @()
+
+              if ($Language -eq 'python')
+              {
+                  $custom = -not [string]::IsNullOrWhiteSpace([string]$config.specFile)
+                  if ($custom)
+                  {
+                      Assert-NoBuildOverrides $config @('entryScript', 'oneFile', 'name')
+                      $inputPath = Resolve-BuildPath $workspace $config.specFile -MustExist
+                      if ([IO.Path]::GetExtension($inputPath) -ne '.spec')
+                      {
+                          throw 'pythonNativeExe.specFile must reference a .spec file.'
+                      }
+                  }
+                  else
+                  {
+                      $inputPath = Resolve-BuildPath $workspace $config.entryScript -MustExist
+                      if ([IO.Path]::GetExtension($inputPath) -ne '.py')
+                      {
+                          throw 'pythonNativeExe.entryScript must reference a .py file.'
+                      }
+                      if ($null -ne $config.oneFile)
+                      {
+                          $singleFile = [Convert]::ToBoolean($config.oneFile)
+                      }
+                  }
+              }
+              else
+              {
+                  $project = [string]$config.project
+                  if ([string]::IsNullOrWhiteSpace($project))
+                  {
+                      $projects = @(Get-ChildItem -LiteralPath $workspace -Recurse -File -Filter '*.csproj')
+                      if ($projects.Count -ne 1)
+                      {
+                          throw 'dotnetNativeExe.project is required unless the repository contains exactly one .csproj file.'
+                      }
+                      $project = [IO.Path]::GetRelativePath($workspace, $projects[0].FullName)
+                  }
+                  $inputPath = Resolve-BuildPath $workspace $project -MustExist
+                  if ([IO.Path]::GetExtension($inputPath) -ne '.csproj')
+                  {
+                      throw 'dotnetNativeExe.project must reference a .csproj file.'
+                  }
+                  $custom = -not [string]::IsNullOrWhiteSpace([string]$config.publishProfile)
+                  if ($custom)
+                  {
+                      Assert-NoBuildOverrides $config @('runtime', 'selfContained', 'singleFile', 'name')
+                      $profilePath = Resolve-BuildPath $workspace $config.publishProfile -MustExist
+                      if ([IO.Path]::GetExtension($profilePath) -ne '.pubxml')
+                      {
+                          throw 'dotnetNativeExe.publishProfile must reference a .pubxml file.'
+                      }
+                      $xmlSettings = [Xml.XmlReaderSettings]::new()
+                      $xmlSettings.DtdProcessing = [Xml.DtdProcessing]::Prohibit
+                      $reader = [Xml.XmlReader]::Create($profilePath, $xmlSettings)
+                      try
+                      {
+                          $profile = [Xml.XmlDocument]::new()
+                          $profile.Load($reader)
+                      }
+                      finally
+                      {
+                          $reader.Dispose()
+                      }
+                      if ($profile.DocumentElement.LocalName -ne 'Project')
+                      {
+                          throw 'Publish profile must be an MSBuild Project document.'
+                      }
+                      $methods = @($profile.SelectNodes("//*[local-name()='WebPublishMethod' or local-name()='PublishProtocol']"))
+                      if ($methods.Count -eq 0 -or @($methods | Where-Object { $_.InnerText.Trim() -ne 'FileSystem' }).Count -gt 0)
+                      {
+                          throw 'Publish profile must explicitly select FileSystem publishing; deployment profiles are not supported.'
+                      }
+                      if ($profile.SelectNodes("//*[local-name()='DeployOnBuild' and translate(normalize-space(.), 'TRUE', 'true')='true']").Count -gt 0)
+                      {
+                          throw 'Publish profiles with DeployOnBuild=true are not supported.'
+                      }
+                      $buildArgs += "-p:PublishProfileFullPath=$profilePath"
+                  }
+                  else
+                  {
+                      $runtime = [string]$config.runtime
+                      if ([string]::IsNullOrWhiteSpace($runtime)) { $runtime = 'win-x64' }
+                      $selfContained = $true
+                      if ($null -ne $config.selfContained) { $selfContained = [Convert]::ToBoolean($config.selfContained) }
+                      if ($null -ne $config.singleFile) { $singleFile = [Convert]::ToBoolean($config.singleFile) }
+                      $buildArgs += @(
+                          '--runtime', $runtime
+                          '--self-contained', $selfContained.ToString().ToLowerInvariant()
+                          "-p:PublishSingleFile=$($singleFile.ToString().ToLowerInvariant())"
+                          '-p:IncludeNativeLibrariesForSelfExtract=true'
+                      )
+                  }
+              }
+
+              $expected = @()
+              if ($null -ne $config.expectedOutputs) { $expected = @($config.expectedOutputs) }
+              if ($custom -and $expected.Count -eq 0)
+              {
+                  throw "$Language custom build mode requires nonempty expectedOutputs."
+              }
+              if (-not $custom)
+              {
+                  if ([string]::IsNullOrWhiteSpace($nativeName)) { $nativeName = [IO.Path]::GetFileNameWithoutExtension($inputPath) }
+                  if ($nativeName -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$')
+                  {
+                      throw "$Language native executable name contains unsupported characters: '$nativeName'."
+                  }
+              }
+              if ([string]::IsNullOrWhiteSpace($TempRoot))
+              {
+                  throw 'TempRoot or RUNNER_TEMP is required for isolated build output.'
+              }
+              $work = Join-Path $TempRoot ("native-$Language-" + [guid]::NewGuid().ToString('N'))
+              $output = Join-Path $work 'publish'
+              $destination = Resolve-BuildPath $workspace "out/$Language-exe"
+              foreach ($relative in $expected)
+              {
+                  $null = Resolve-BuildPath $output $relative
+              }
+
+              Push-Location -LiteralPath $workspace
+              try
+              {
+                  New-Item -ItemType Directory -Path $output -Force | Out-Null
+                  if ($Language -eq 'python')
+                  {
+                      & python -m pip install --quiet pyinstaller
+                      if ($LASTEXITCODE -ne 0) { throw 'Unable to install PyInstaller.' }
+                      $argsList = @('--clean', '--noconfirm', '--distpath', $output, '--workpath', (Join-Path $work 'build'))
+                      if (-not $custom)
+                      {
+                          $argsList += @('--specpath', (Join-Path $work 'spec'), '--name', $nativeName)
+                          $argsList += $(if ($singleFile) { '--onefile' } else { '--onedir' })
+                          if ($null -ne $config.additionalArgs) {
+                              $argsList += @($config.additionalArgs | ForEach-Object { [string]$_ })
+                          }
+                      }
+                      $argsList += $inputPath
+                      & python -m PyInstaller @argsList
+                      if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed for '$inputPath'." }
+                  }
+                  else
+                  {
+                      $argsList = @($inputPath, '--configuration', 'Release') + $buildArgs
+                      if (-not $custom -and $null -ne $config.additionalArgs) {
+                          $argsList += @($config.additionalArgs | ForEach-Object { [string]$_ })
+                      }
+                      # Global properties override profile defaults for pipeline-owned output and deployment controls.
+                      $argsList += @(
+                          '--output', $output
+                          "-p:PublishDir=$output$([IO.Path]::DirectorySeparatorChar)"
+                          "-p:PublishUrl=$output$([IO.Path]::DirectorySeparatorChar)"
+                          '-p:DeployOnBuild=false'
+                          '-p:WebPublishMethod=FileSystem'
+                          '-p:PublishProtocol=FileSystem'
+                      )
+                      & dotnet publish @argsList
+                      if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed for '$inputPath'." }
+                  }
+
+                  if (@(Get-ChildItem -LiteralPath $output -Recurse -File).Count -eq 0)
+                  {
+                      throw "$Language build produced no files."
+                  }
+                  foreach ($relative in $expected)
+                  {
+                      $path = Resolve-BuildPath $output $relative
+                      if (-not (Test-Path -LiteralPath $path))
+                      {
+                          throw "Expected $Language output is missing: '$relative'."
+                      }
+                  }
+                  foreach ($item in @(Get-ChildItem -LiteralPath $output -Recurse -Force))
+                  {
+                      if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)
+                      {
+                          throw "Build outputs cannot contain symbolic links or junctions: '$($item.FullName)'."
+                      }
+                  }
+                  if (-not $custom -and $Language -eq 'python')
+                  {
+                      $legacyOutput = Join-Path $output $(if ($singleFile) { "$nativeName.exe" } else { $nativeName })
+                      $kind = if ($singleFile) { 'Leaf' } else { 'Container' }
+                      if (-not (Test-Path -LiteralPath $legacyOutput -PathType $kind))
+                      {
+                          throw "Expected Python output is missing: '$legacyOutput'."
+                      }
+                  }
+                  if (-not $custom -and $Language -eq 'dotnet' -and $singleFile)
+                  {
+                      $executables = @(Get-ChildItem -LiteralPath $output -File -Filter '*.exe')
+                      if ($executables.Count -ne 1) { throw "Expected exactly one .NET executable, found $($executables.Count)." }
+                  }
+                  if (Test-Path -LiteralPath $destination)
+                  {
+                      Remove-Item -LiteralPath $destination -Recurse -Force
+                  }
+                  New-Item -ItemType Directory -Path $destination -Force | Out-Null
+                  if (-not $custom -and $Language -eq 'dotnet')
+                  {
+                      if ($singleFile)
+                      {
+                          Copy-Item -LiteralPath $executables[0].FullName -Destination (Join-Path $destination "$nativeName.exe")
+                      }
+                      else
+                      {
+                          $bundle = New-Item -ItemType Directory -Path (Join-Path $destination $nativeName)
+                          Get-ChildItem -LiteralPath $output -Force | Copy-Item -Destination $bundle -Recurse -Force
+                      }
+                  }
+                  else
+                  {
+                      Get-ChildItem -LiteralPath $output -Force | Copy-Item -Destination $destination -Recurse -Force
+                  }
+                  Write-Output "$Language application bundle staged under '$destination'."
+              }
+              finally
+              {
+                  Pop-Location
+                  if (Test-Path -LiteralPath $work)
+                  {
+                      Remove-Item -LiteralPath $work -Recurse -Force
+                  }
+              }
+          }
+
+          if ($env:BUILD_HAS_DOTNET -eq 'True') { Invoke-NativeBuild -Language dotnet }
+          if ($env:BUILD_HAS_PYTHON -eq 'True') { Invoke-NativeBuild -Language python }
 
       - name: Download dependency release packages
         if: (steps.detect.outputs.has_powershell == 'True' || steps.detect.outputs.has_dotnet == 'True' || steps.detect.outputs.has_python == 'True') && steps.dependency_repos.outputs.has_dependencies == 'true'
@@ -2611,6 +2967,17 @@ jobs:
               Copy-Item -LiteralPath $sourcePath -Destination $destinationPath -Force
             }
 
+            if ($definition.description -eq 'Default single-package output') {
+              foreach ($language in @('python', 'dotnet')) {
+                $nativeRoot = Join-Path $repoRoot "out/$language-exe"
+                if (Test-Path -LiteralPath $nativeRoot -PathType Container) {
+                  $nativePackageRoot = Join-Path $packageStageRoot "$language-exe"
+                  New-Item -ItemType Directory -Path $nativePackageRoot -Force | Out-Null
+                  Get-ChildItem -LiteralPath $nativeRoot -Force | Copy-Item -Destination $nativePackageRoot -Recurse -Force
+                }
+              }
+            }
+
             $manifestName = "${{ env.RELEASE_HASH_MANIFEST_FILE }}"
             $manifestPath = Join-Path $packageStageRoot $manifestName
             $packageFiles = @(Get-ChildItem -Path $packageStageRoot -Recurse -File -Force | Where-Object { $_.FullName -ne $manifestPath } | Sort-Object FullName)
@@ -2799,7 +3166,8 @@ jobs:
         uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '9.0.x'
-          cache: true
+          cache: ${{ hashFiles('**/packages.lock.json') != '' }}
+          cache-dependency-path: '**/packages.lock.json'
 
       - name: Publish .NET packages to external registries
         if: needs.prepare-release.outputs.has_dotnet == 'True'
@@ -2873,7 +3241,7 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: '3.13'
-          cache: pip
+          cache: ${{ hashFiles('**/requirements.txt', '**/pyproject.toml') != '' && 'pip' || '' }}
 
       - name: Publish Python distributions to external registries
         if: needs.prepare-release.outputs.has_python == 'True'
@@ -2957,7 +3325,19 @@ jobs:
             throw "RELEASE_TAG is not set; unable to publish GitHub release."
           }
 
-          $assets = @(Get-ChildItem -Path out -Recurse -File | ForEach-Object { $_.FullName })
+          $outputRoot = (Resolve-Path -LiteralPath out).Path
+          $assetFiles = @(Get-ChildItem -LiteralPath $outputRoot -Recurse -File | Where-Object {
+            $relativePath = [IO.Path]::GetRelativePath($outputRoot, $_.FullName)
+            $relativePath -notmatch '^(python-exe|dotnet-exe)[\\/]'
+          })
+          $duplicates = @($assetFiles | Group-Object Name | Where-Object Count -gt 1)
+          if ($duplicates.Count -gt 0) {
+            $conflicts = $duplicates | ForEach-Object {
+              "$($_.Name): $($_.Group.FullName -join ', ')"
+            }
+            throw "Duplicate GitHub release asset names: $($conflicts -join '; ')"
+          }
+          $assets = @($assetFiles | ForEach-Object FullName)
 
           if ($assets.Count -eq 0) {
             throw "No release assets found under 'out'."
@@ -3081,4 +3461,3 @@ jobs:
 
             "| $jobName | $result |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           }
-

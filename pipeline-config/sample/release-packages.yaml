@@ -2,8 +2,7 @@
 # - single: create only the default archive from pipeline.yaml.
 # - multi: create one archive per releasePackages entry.
 # - multi-with-default: create the package archives and the default archive.
-packageMode: multi-with-default
-
+packageMode: single
 
 # When true, the same file can be included in multiple packages.
 # When false, overlapping file ownership fails release packaging.

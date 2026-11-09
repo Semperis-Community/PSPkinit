@@ -15,26 +15,72 @@ workflowContractVersion: 1.0.0
 releasePackageName: PSPkinit
 
 # Optional native Windows executable generation for Python projects.
-# When enabled, entryScript must point to a repository-relative Python entry point.
-# oneFile embeds the Python runtime and dependencies in one executable by default.
+# Set enabled to true after adding the spec and its referenced inputs.
+# Empty legacy settings preserve config shape without overriding the spec.
 pythonNativeExe:
   enabled: false
+  specFile: build/customer-app.spec
+  expectedOutputs:
+    - customer-app.exe
   entryScript: ''
-  oneFile: true
+  oneFile: ''
   name: ''
   additionalArgs: []
 
+# Repository-owned PyInstaller spec example: REPLACE the pythonNativeExe section
+# above with this section; do not add a second pythonNativeExe key.
+# pythonNativeExe:
+#   enabled: true
+#   specFile: build/customer-app.spec
+#   expectedOutputs:
+#     - customer-app.exe
+#
+# The spec owns entry points, executable names, resources, and bundle layout.
+# Remove entryScript, oneFile, and name; omit additionalArgs or leave it empty.
+# Input paths are relative to the repository root. Build runs from that root.
+# expectedOutputs lists exact paths relative to the generated output directory.
+# For a directory bundle, use these expectedOutputs instead:
+#     - customer-app/customer-app.exe
+#     - customer-app/_internal
+# All bundle files are staged under out/python-exe, not only expectedOutputs.
+# Use release-packages.yaml packageMode: single or multi-with-default to include
+# the bundle in the default archive under python-exe/.
+
 # Optional native Windows executable generation for .NET projects.
-# When enabled, project must point to a repository-relative .csproj file.
-# selfContained and singleFile default to true for a standalone EXE.
+# Set enabled to true after adding the project and filesystem publish profile.
+# Empty legacy settings preserve config shape without overriding the profile.
 dotnetNativeExe:
   enabled: false
-  project: ''
-  runtime: win-x64
-  selfContained: true
-  singleFile: true
+  publishProfile: src/CustomerApp/Properties/PublishProfiles/Release.pubxml
+  expectedOutputs:
+    - CustomerApp.exe
+    - appsettings.json
+  project: src/CustomerApp/CustomerApp.csproj
+  runtime: ''
+  selfContained: ''
+  singleFile: ''
   name: ''
   additionalArgs: []
+
+# Repository-owned .NET profile example: REPLACE the dotnetNativeExe section
+# above with this section; do not add a second dotnetNativeExe key.
+# dotnetNativeExe:
+#   enabled: true
+#   project: src/CustomerApp/CustomerApp.csproj
+#   publishProfile: src/CustomerApp/Properties/PublishProfiles/Release.pubxml
+#   expectedOutputs:
+#     - CustomerApp.exe
+#     - appsettings.json
+#
+# The profile must explicitly select FileSystem publishing through
+# PublishProtocol or WebPublishMethod; remote deployment is not supported.
+# The profile owns runtime, self-contained, single-file, and other build settings.
+# Remove runtime, selfContained, singleFile, and name; additionalArgs must be empty.
+# The pipeline owns output paths and stages the entire bundle under out/dotnet-exe.
+# expectedOutputs is required and lists exact generated file/directory paths.
+# Use packageMode: single or multi-with-default for the default dotnet-exe/ archive
+# content. Neither custom mode permits absolute paths, traversal, or wildcards.
+# Specifications/profiles execute build code: commit no secrets and use trusted inputs.
 
 # Explicit release versioning policy used when a PR merge to main creates the next tag.
 # method: Choose versioning strategy - 'semver' (default) or 'calver'
@@ -63,6 +109,15 @@ versioningPolicy:
         - release:minor
       patch:
         - release:patch
+    # Applied only when no labelOverrides label is present on the merged PR.
+    inferredLabelOverrides:
+      minor:
+        - feature
+        - enhancement
+      patch:
+        - bug
+        - error
+        - documentation
 
   # Calendar versioning configuration (used when method: calver)
   # Versions follow format: YYYY.MM.DD.PATCH (e.g., 2026.06.10.0, 2026.06.10.1)
